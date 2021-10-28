@@ -1,3 +1,5 @@
+use ark_bls12_381::Bls12_381;
+use ark_ec::PairingEngine;
 use ark_ec::{
     group::Group,
     models::{twisted_edwards_extended, TEModelParameters as Parameters},
@@ -15,28 +17,26 @@ use ark_r1cs_std::{
     groups::curves::twisted_edwards,
     select::CondSelectGadget,
 };
-use ark_relations::{
-    ns,
-    r1cs::{ConstraintSystemRef, SynthesisError},
-};
+use ark_relations::r1cs::{Namespace, SynthesisError};
 use ark_std::rand::{prelude::StdRng, SeedableRng};
 use arkworks_gadgets::poseidon::{constraints::PoseidonParametersVar, PoseidonParameters, Rounds};
 use digest::Digest;
 
-pub(crate) type ConstraintF<C> = <<C as ProjectiveCurve>::BaseField as Field>::BasePrimeField;
+pub(crate) type BlsG1 = <Bls12_381 as PairingEngine>::G1Projective;
+pub(crate) type BlsFr = ark_bls12_381::fr::Fr;
+pub(crate) type BlsFq = <BlsG1 as ProjectiveCurve>::BaseField;
+pub(crate) type BlsFrV = FpVar<BlsFr>;
 
 // Some type aliases for the Poseidon construction
-type BlsFr = ark_bls12_381::fr::Fr;
-type BlsFrV = FpVar<BlsFr>;
 type CRH = arkworks_gadgets::setup::common::PoseidonCRH_x3_5<BlsFr>;
 type CRHGadget = arkworks_gadgets::setup::common::PoseidonCRH_x3_5Gadget<BlsFr>;
+type PoseidonRounds = arkworks_gadgets::setup::common::PoseidonRounds_x3_5;
 const POSEIDON_CURVE: arkworks_gadgets::setup::common::Curve =
     arkworks_gadgets::setup::common::Curve::Bls381;
 
 // A field element which is used to domain-separate the Poseidon-based commitment scheme from the
 // Poseidon-based PRF scheme
 const POSEIDON_COM_DOMAIN_SEP: u64 = 1337;
-type PoseidonRounds = arkworks_gadgets::setup::common::PoseidonRounds_x3_5;
 
 /// Provides all the Poseidon functionality we need natively
 pub(crate) struct PoseidonCtx(PoseidonParameters<BlsFr>);
@@ -80,9 +80,11 @@ impl PoseidonCtx {
 pub(crate) struct PoseidonCtxVar(PoseidonParametersVar<BlsFr>);
 
 impl PoseidonCtxVar {
-    pub(crate) fn new(cs: ConstraintSystemRef<BlsFr>) -> Result<PoseidonCtxVar, SynthesisError> {
+    pub(crate) fn new(cs: impl Into<Namespace<BlsFr>>) -> Result<PoseidonCtxVar, SynthesisError> {
+        let ns = cs.into();
+        let cs = ns.cs();
         let params = arkworks_gadgets::setup::common::setup_params_x3_5::<BlsFr>(POSEIDON_CURVE);
-        let params_var = PoseidonParametersVar::new_constant(ns!(cs, "poseidon ctx"), &params)?;
+        let params_var = PoseidonParametersVar::new_constant(cs, &params)?;
         Ok(PoseidonCtxVar(params_var))
     }
 
@@ -116,7 +118,7 @@ impl PoseidonCtxVar {
 }
 
 /// Converts an element of a curve's scalar field into an element of the base field
-pub fn fr_to_fs<C, Fs>(x: <C as ProjectiveCurve>::ScalarField) -> Fs
+pub(crate) fn fr_to_fs<C, Fs>(x: <C as ProjectiveCurve>::ScalarField) -> Fs
 where
     C: ProjectiveCurve<BaseField = Fs>,
     Fs: PrimeField,
@@ -126,7 +128,7 @@ where
     Fs::read(&*x_bytes).unwrap()
 }
 
-pub fn hash_to_field<D, F>(input: &[u8]) -> F
+pub(crate) fn hash_to_field<D, F>(input: &[u8]) -> F
 where
     D: Digest,
     F: Field,
@@ -146,7 +148,9 @@ where
 /// Enforces that the input bitstring has precisely 1 bit set
 /// NOTE: Requires that one_hot_vec.len() < F.characteristic(). This is true for any reasonable
 /// security parameter.
-pub fn enforce_one_hot<F: PrimeField>(one_hot_vec: &[Boolean<F>]) -> Result<(), SynthesisError> {
+pub(crate) fn enforce_one_hot<F: PrimeField>(
+    one_hot_vec: &[Boolean<F>],
+) -> Result<(), SynthesisError> {
     let one = FpVar::one();
     let zero = FpVar::zero();
 
