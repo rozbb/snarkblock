@@ -352,7 +352,7 @@ mod test {
 
     use ark_ff::UniformRand;
     use ark_relations::r1cs::ConstraintSystem;
-    use ark_std::rand::SeedableRng;
+    use ark_std::rand::{rngs::StdRng, SeedableRng};
 
     // Just checks that Schnorr signing doesn't panic
     #[test]
@@ -362,7 +362,7 @@ mod test {
         // of times.
         for seed in 0..100 {
             // Make a random privkey and message
-            let mut rng = ark_std::rand::rngs::StdRng::seed_from_u64(seed);
+            let mut rng = StdRng::seed_from_u64(seed);
             let privkey = SchnorrPrivkey::gen(&mut rng);
             let msg = BlsFr::rand(&mut rng);
 
@@ -377,7 +377,7 @@ mod test {
         let num_pubkeys = 10;
 
         for seed in 0..10 {
-            let mut rng = ark_std::rand::rngs::StdRng::seed_from_u64(seed);
+            let mut rng = StdRng::seed_from_u64(seed);
 
             let priv_id = PrivateId::gen(&mut rng);
 

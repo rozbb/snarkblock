@@ -5,7 +5,11 @@ use crate::{
 };
 
 use ark_ff::{ToConstraintField, UniformRand};
-use ark_std::rand::{CryptoRng, Rng};
+use ark_std::rand::{rngs::StdRng, CryptoRng, Rng, SeedableRng};
+
+pub(crate) fn test_rng() -> StdRng {
+    StdRng::seed_from_u64(1337)
+}
 
 pub(crate) fn rand_schnorr_verify_circuit<R: Rng + CryptoRng>(
     rng: &mut R,
