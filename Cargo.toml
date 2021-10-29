@@ -17,6 +17,7 @@ ark-relations = "0.3"
 ark-serialize = { version = "0.3", default-features = false, features = [ "derive" ] }
 ark-std = { version = "0.3", default-features = false }
 arkworks-gadgets = { git = "https://github.com/rozbb/arkworks-gadgets.git", branch = "pub-permute" }
+blake2 = "0.9"
 digest = "0.9"
 
 [features]

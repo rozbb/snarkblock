@@ -18,6 +18,7 @@ use ark_r1cs_std::{
     select::CondSelectGadget,
 };
 use ark_relations::r1cs::{Namespace, SynthesisError};
+use ark_serialize::{CanonicalSerialize, SerializationError};
 use ark_std::rand::{prelude::StdRng, SeedableRng};
 use arkworks_gadgets::poseidon::{constraints::PoseidonParametersVar, PoseidonParameters, Rounds};
 use digest::Digest;
@@ -143,6 +144,15 @@ where
         };
         counter_nonce += 1;
     }
+}
+
+/// Serializes the given value into a Vec<u8>
+pub(crate) fn to_canonical_bytes(
+    val: impl CanonicalSerialize,
+) -> Result<Vec<u8>, SerializationError> {
+    let mut buf = Vec::new();
+    val.serialize(&mut buf)?;
+    Ok(buf)
 }
 
 /// Enforces that the input bitstring has precisely 1 bit set

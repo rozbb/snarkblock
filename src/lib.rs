@@ -37,7 +37,7 @@ impl PrivateIdVar {
         let ns = cs.into();
         let cs = ns.cs();
 
-        let val = BlsFrV::new_input(ns!(cs, "private id"), || Ok(priv_id.0))?;
+        let val = BlsFrV::new_input(cs, || Ok(priv_id.0))?;
         Ok(PrivateIdVar(val))
     }
 }

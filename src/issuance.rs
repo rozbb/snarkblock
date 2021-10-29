@@ -1,12 +1,13 @@
 use crate::util::{
-    enforce_one_hot, fr_to_fs, BlsFr, BlsFrV, GetAffineCoords, PoseidonCtx, PoseidonCtxVar,
+    enforce_one_hot, fr_to_fs, to_canonical_bytes, BlsFr, BlsFrV, GetAffineCoords, PoseidonCtx,
+    PoseidonCtxVar,
 };
 
 use core::iter;
 
 use ark_ec::ProjectiveCurve;
 use ark_ed_on_bls12_381::{constraints::EdwardsVar as JubjubVar, EdwardsProjective as Jubjub};
-use ark_ff::{to_bytes, Field, PrimeField, UniformRand};
+use ark_ff::{Field, PrimeField, UniformRand};
 use ark_r1cs_std::{
     alloc::AllocVar, bits::ToBitsGadget, boolean::Boolean, eq::EqGadget, groups::CurveVar, R1CSVar,
 };
@@ -77,7 +78,7 @@ impl SchnorrPrivkey {
         // scalar. So we convert it to bytes and truncate it to as many bits as a ScalarField
         // element can hold
         let e = {
-            let mut digest_bytes = to_bytes!(digest).unwrap();
+            let mut digest_bytes = to_canonical_bytes(digest).unwrap();
 
             // We only want the first floor(log2(p)) bits of e, where r is the prime order of the
             // scalar field. We do this by finding how many bytes are needed to represent r,
