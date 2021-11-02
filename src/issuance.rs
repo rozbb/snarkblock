@@ -1,6 +1,9 @@
-use crate::util::{
-    enforce_one_hot, fr_to_fs, to_canonical_bytes, BlsFr, BlsFrV, GetAffineCoords, PoseidonCtx,
-    PoseidonCtxVar,
+use crate::{
+    util::{
+        enforce_one_hot, fr_to_fs, to_canonical_bytes, BlsFr, BlsFrV, GetAffineCoords, PoseidonCtx,
+        PoseidonCtxVar,
+    },
+    PrivateId, PrivateIdVar,
 };
 
 use core::iter;
@@ -13,18 +16,19 @@ use ark_r1cs_std::{
 };
 use ark_relations::{
     ns,
-    r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError},
+    r1cs::{ConstraintSynthesizer, ConstraintSystemRef, Namespace, SynthesisError},
 };
+use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Read, SerializationError, Write};
 use ark_std::rand::{CryptoRng, Rng, RngCore};
 
 type JubjubFr = <Jubjub as ProjectiveCurve>::ScalarField;
 #[derive(Clone)]
 pub(crate) struct SchnorrPrivkey(JubjubFr);
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub(crate) struct SchnorrPubkey(pub(crate) Jubjub);
 #[derive(Clone)]
 pub(crate) struct SchnorrPubkeyVar(JubjubVar);
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub(crate) struct SchnorrSignature {
     /// Challenge
     e: JubjubFr,
@@ -37,6 +41,28 @@ pub(crate) struct SchnorrSignatureVar {
     e: BlsFrV,
     /// Response to challenge
     s: BlsFrV,
+}
+
+impl SchnorrSignatureVar {
+    pub(crate) fn new_witness(
+        cs: impl Into<Namespace<BlsFr>>,
+        sig: &SchnorrSignature,
+    ) -> Result<SchnorrSignatureVar, SynthesisError> {
+        let ns = cs.into();
+        let cs = ns.cs();
+
+        // Signatures are Jubjub scalars. In order to use them in the circuit we need to embed them
+        // into the Jubjub's scalar field (which is at least as big as the Jubjub scalar field, so
+        // this is injective)
+        let lifted_s = fr_to_fs::<Jubjub, BlsFr>(sig.s);
+        let lifted_e = fr_to_fs::<Jubjub, BlsFr>(sig.e);
+
+        // Construct the lifted signature
+        let s_var = BlsFrV::new_witness(ns!(cs, "sig s var"), || Ok(lifted_s))?;
+        let e_var = BlsFrV::new_witness(ns!(cs, "sig e var"), || Ok(lifted_e))?;
+
+        Ok(SchnorrSignatureVar { e: e_var, s: s_var })
+    }
 }
 
 impl<'a> From<&'a SchnorrPrivkey> for SchnorrPubkey {
@@ -110,9 +136,29 @@ impl SchnorrPrivkey {
 
         SchnorrSignature { e, s }
     }
+
+    /// Issues the given credential commitment by signing it and returning the signature
+    pub fn issue<R: RngCore + CryptoRng>(
+        &self,
+        rng: &mut R,
+        issuance_req: &IssuanceReq,
+    ) -> SchnorrSignature {
+        self.sign(rng, &issuance_req.0)
+    }
 }
 
 impl SchnorrPubkeyVar {
+    pub(crate) fn new_input(
+        cs: impl Into<Namespace<BlsFr>>,
+        pk: &SchnorrPubkey,
+    ) -> Result<SchnorrPubkeyVar, SynthesisError> {
+        let ns = cs.into();
+        let cs = ns.cs();
+
+        let aff_pk = pk.0.into_affine();
+        JubjubVar::new_input(cs, || Ok(aff_pk)).map(SchnorrPubkeyVar)
+    }
+
     /// Verifies the given (message, signature) pair under the given public key. All this is done in
     /// zero-knowledge.
     /// The signature is expected to have been embedded from (Fr, Fr) to (Fq, Fq). The reason we do
@@ -163,30 +209,57 @@ impl SchnorrPubkeyVar {
     }
 }
 
-/// A circuit which proves the statement "I know the opening to a commitment C on message M.
+#[derive(Clone, CanonicalSerialize, CanonicalDeserialize)]
+/// An issuance request contains just a Poseidon commitment to the credential
+pub struct IssuanceReq(BlsFr);
+
+#[derive(Clone, CanonicalSerialize, CanonicalDeserialize, Default)]
+/// The opening to a private ID commitment
+pub struct IssuanceOpening(BlsFr);
+
+impl PrivateId {
+    /// Constructs an issuance request for this private ID. Returns the secret opening for the
+    /// request, to be used in later issuance proofs.
+    pub fn request_issuance<R: CryptoRng + RngCore>(
+        &self,
+        rng: &mut R,
+    ) -> (IssuanceReq, IssuanceOpening) {
+        let hash_ctx = PoseidonCtx::new();
+
+        // Make a random commitment to this private ID
+        let opening = BlsFr::rand(rng);
+        let com = hash_ctx.com(self.0, opening);
+
+        (IssuanceReq(com), IssuanceOpening(opening))
+    }
+}
+
+/// A circuit which proves the statement "I know the opening to a commitment C on private ID K.
 /// Further, I know a signature over C which is signed by a public key in list L".
 #[derive(Clone)]
 pub(crate) struct OneofNSchnorrVerifyCircuit {
-    // Hidden Common Inputs
-    pub msg: Option<BlsFr>,
-    // Public inputs
-    pub num_pubkeys: usize,
-    pub pubkeys: Option<Vec<SchnorrPubkey>>,
-    // Private inputs
-    /// The one-hot encoding of the pubkey being used for verification
-    pub pubkey_selector: Option<Vec<bool>>,
-    pub com_nonce: Option<BlsFr>,
-    pub sig: Option<SchnorrSignature>,
+    // Hidden common inputs //
+    pub priv_id: PrivateId,
+    // Public inputs //
+    // The set of verifier keys that could have signed a commitment to msg
+    pub pubkeys: Vec<SchnorrPubkey>,
+    // Private inputs //
+    // The one-hot encoding of the pubkey being used for verification
+    pub pubkey_selector: Vec<bool>,
+    // The opnening to a commitment to priv_id
+    pub opening: IssuanceOpening,
+    // A signature over Com(priv_id; com_opening) wrt the pubkey selected by pubkey_selector
+    pub sig: SchnorrSignature,
 }
 
 impl OneofNSchnorrVerifyCircuit {
     /// Constructs a verification circuit given a list of pubkeys, the index of the pubkey that was
-    /// used to sign a message, the message, and the signature
+    /// used to sign the private ID commitment, the private ID, and the signature
     pub fn new(
         pubkeys: Vec<SchnorrPubkey>,
         signers_pubkey_idx: u16,
-        msg: BlsFr,
-        com_nonce: BlsFr,
+        priv_id: PrivateId,
+        opening: IssuanceOpening,
         sig: SchnorrSignature,
     ) -> OneofNSchnorrVerifyCircuit {
         // Signer's index must be valid
@@ -200,12 +273,11 @@ impl OneofNSchnorrVerifyCircuit {
         pubkey_selector[signers_pubkey_idx as usize] = true;
 
         OneofNSchnorrVerifyCircuit {
-            num_pubkeys: pubkeys.len(),
-            pubkeys: Some(pubkeys),
-            pubkey_selector: Some(pubkey_selector),
-            msg: Some(msg),
-            com_nonce: Some(com_nonce),
-            sig: Some(sig),
+            pubkeys,
+            pubkey_selector,
+            priv_id,
+            opening,
+            sig,
         }
     }
 
@@ -213,121 +285,39 @@ impl OneofNSchnorrVerifyCircuit {
     /// parameter generation.
     pub(crate) fn new_placeholder(num_pubkeys: usize) -> OneofNSchnorrVerifyCircuit {
         OneofNSchnorrVerifyCircuit {
-            num_pubkeys,
-            pubkeys: None,
-            pubkey_selector: None,
-            msg: None,
-            com_nonce: None,
-            sig: None,
+            pubkeys: vec![SchnorrPubkey::default(); num_pubkeys],
+            pubkey_selector: vec![false; num_pubkeys],
+            priv_id: PrivateId::default(),
+            opening: IssuanceOpening::default(),
+            sig: SchnorrSignature::default(),
         }
-    }
-}
-
-impl OneofNSchnorrVerifyCircuit {
-    /// Returns
-    ///     com_nonce_var,
-    ///     pubkey_vars,
-    ///     pubkey_selector_var,
-    ///     sig_var,
-    pub(crate) fn get_input_vars(
-        self,
-        cs: &ConstraintSystemRef<BlsFr>,
-    ) -> Result<
-        (
-            BlsFrV,
-            Vec<SchnorrPubkeyVar>,
-            Vec<Boolean<BlsFr>>,
-            SchnorrSignatureVar,
-        ),
-        SynthesisError,
-    > {
-        let com_nonce_var = BlsFrV::new_witness(ns!(cs, "com nonce var"), || {
-            self.com_nonce.ok_or(SynthesisError::AssignmentMissing)
-        })?;
-
-        let pubkey_vars: Vec<SchnorrPubkeyVar> = match self.pubkeys {
-            // If we're the prover, witness all the pubkeys into a vector
-            Some(pubkeys) => pubkeys
-                .iter()
-                .map(|pk| pk.0.into_affine())
-                .map(|aff_pubkey| JubjubVar::new_input(ns!(cs, "pubkey var"), || Ok(aff_pubkey)))
-                .map(|pkv| pkv.map(SchnorrPubkeyVar))
-                .collect::<Result<Vec<SchnorrPubkeyVar>, _>>()?,
-            // If we're the verifier, create the appropriate number of symbolic pubkey vars
-            None => {
-                let value_placeholder: Result<Jubjub, _> = Err(SynthesisError::AssignmentMissing);
-                (0..self.num_pubkeys)
-                    .map(|_| JubjubVar::new_input(ns!(cs, "pubkey var"), || value_placeholder))
-                    .map(|pkv| pkv.map(SchnorrPubkeyVar))
-                    .collect::<Result<Vec<SchnorrPubkeyVar>, _>>()?
-            }
-        };
-
-        // Witness the public key selector
-        let pubkey_selector_var: Vec<Boolean<BlsFr>> = match self.pubkey_selector {
-            // If we're the prover, witness all the bools into a vector
-            Some(v) => v
-                .iter()
-                .map(|bit| Boolean::new_witness(ns!(cs, "selector bit"), || Ok(bit)))
-                .collect::<Result<Vec<Boolean<BlsFr>>, _>>()?,
-            // Otherwise, construct a vector of the same expected length, using palceholder values
-            None => {
-                // If we're the verifier, create the appropriate number of symbolic bit vars
-                let value_placeholder: Result<bool, _> = Err(SynthesisError::AssignmentMissing);
-                (0..self.num_pubkeys)
-                    .map(|_| {
-                        Boolean::<BlsFr>::new_witness(ns!(cs, "selector bit"), || value_placeholder)
-                    })
-                    .collect::<Result<Vec<Boolean<BlsFr>>, _>>()?
-            }
-        };
-
-        // Signatures are Jubjub scalars. In order to use them in the circuit we need to embed them
-        // into the Jubjub's scalar field (which is at least as big as the Jubjub scalar field, so
-        // this is injective)
-        let sig_var = {
-            let lifted_s: Result<BlsFr, _> = self
-                .sig
-                .as_ref()
-                .ok_or(SynthesisError::AssignmentMissing)
-                .map(|sig| fr_to_fs::<Jubjub, BlsFr>(sig.s));
-            let lifted_e: Result<BlsFr, _> = self
-                .sig
-                .as_ref()
-                .ok_or(SynthesisError::AssignmentMissing)
-                .map(|sig| fr_to_fs::<Jubjub, BlsFr>(sig.e));
-
-            // Construct the lifted signature
-            let s_var = BlsFrV::new_witness(ns!(cs, "sig s var"), || lifted_s)?;
-            let e_var = BlsFrV::new_witness(ns!(cs, "sig e var"), || lifted_e)?;
-            SchnorrSignatureVar { e: e_var, s: s_var }
-        };
-
-        Ok((com_nonce_var, pubkey_vars, pubkey_selector_var, sig_var))
     }
 }
 
 impl ConstraintSynthesizer<BlsFr> for OneofNSchnorrVerifyCircuit {
     fn generate_constraints(self, cs: ConstraintSystemRef<BlsFr>) -> Result<(), SynthesisError> {
-        // Check consistency of num_pubkeys wrt the given list
-        if let Some(v) = &self.pubkeys {
-            assert_eq!(v.len(), self.num_pubkeys);
-        }
+        // Get the public inputs
+        let priv_id_var = PrivateIdVar::new_input(ns!(cs, "priv_id var"), &self.priv_id)?;
+        let pubkey_vars = self
+            .pubkeys
+            .iter()
+            .map(|pk| SchnorrPubkeyVar::new_input(ns!(cs, "pubkey var"), pk))
+            .collect::<Result<Vec<SchnorrPubkeyVar>, _>>()?;
 
-        // Witness the message
-        let msg_var = BlsFrV::new_input(ns!(cs, "msg var"), || {
-            self.msg.ok_or(SynthesisError::AssignmentMissing)
-        })?;
-
-        // Get the rest of the circuit input vars
-        let (com_nonce_var, pubkey_vars, pubkey_selector_var, sig_var) =
-            self.get_input_vars(&cs)?;
+        // Witness the hidden inputs
+        let sig_var = SchnorrSignatureVar::new_witness(ns!(cs, "sig var"), &self.sig)?;
+        let opening_var = BlsFrV::new_witness(ns!(cs, "opening var"), || Ok(self.opening.0))?;
+        let pubkey_selector_var = self
+            .pubkey_selector
+            .iter()
+            .map(|b| Boolean::new_witness(ns!(cs, "pubkey var"), || Ok(b)))
+            .collect::<Result<Vec<Boolean<BlsFr>>, _>>()?;
 
         let hash_ctx = PoseidonCtxVar::new(ns!(cs, "hash ctx"))?;
 
         // Calculate the commitment com = H(nonce || msg). This is the thing that was signed by the
         // issuer
-        let com_var = hash_ctx.com(msg_var, com_nonce_var)?;
+        let com_var = hash_ctx.com(priv_id_var.0, opening_var)?;
 
         // Ensure that the encoding has exactly 1 bit set
         enforce_one_hot(&pubkey_selector_var)?;
@@ -391,10 +381,10 @@ mod test {
             assert!(cs.is_satisfied()?);
 
             // Now change the signature and assert that it does not verify. Pick a random e.
-            let old_s = circuit_copy.sig.clone().unwrap().s;
+            let old_s = circuit_copy.sig.clone().s;
             let new_e = JubjubFr::rand(&mut rng);
             let new_sig = SchnorrSignature { s: old_s, e: new_e };
-            circuit_copy.sig = Some(new_sig);
+            circuit_copy.sig = new_sig;
 
             // Now run the circuit and make sure it's false
             let cs = ConstraintSystem::<BlsFr>::new_ref();
