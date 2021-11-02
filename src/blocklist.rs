@@ -17,7 +17,7 @@ use digest::Digest;
 const SPID_DOMAIN_STR: &[u8] = b"snarkblock-spid";
 
 /// A nonce that has been bound to an SPID
-#[derive(CanonicalSerialize, CanonicalDeserialize, Clone, Copy)]
+#[derive(CanonicalSerialize, CanonicalDeserialize, Clone, Copy, Default)]
 pub struct SessionNonce(pub(crate) BlsFr);
 
 impl SessionNonce {
@@ -40,7 +40,7 @@ impl SessionNonce {
 }
 
 /// A session tag of the form tag = Prf_k(nonce) where k is a private ID
-#[derive(CanonicalSerialize, CanonicalDeserialize, Clone, Copy)]
+#[derive(CanonicalSerialize, CanonicalDeserialize, Clone, Copy, Default)]
 pub struct SessionTag(pub(crate) BlsFr);
 
 #[derive(CanonicalSerialize, CanonicalDeserialize, Clone, Copy)]
@@ -225,11 +225,75 @@ impl ConstraintSynthesizer<BlsFr> for ChunkNonMembershipCircuit {
     }
 }
 
+/// This circuit proves that the blacklist element (sess_nonce, sess_tag) satisfies the relation
+/// `sess_tag = H(sp_id || sess_nonce || credential)` where `sp_id` is the (public) service
+/// provider ID, and credential is the hidden credential.
+#[derive(Clone, Default)]
+pub struct TagWellformednessCircuit {
+    // Hidden common inputs
+    pub priv_id: PrivateId,
+    // Public inputs
+    pub blocklist_elem: BlocklistElem,
+}
+
+impl ConstraintSynthesizer<BlsFr> for TagWellformednessCircuit {
+    // The goal of this function is to prove that
+    //     H(self.sp_id || self.sess_nonce || self.credential) = self.sess_tag,
+    // i.e., that the given session tag is correctly constructed wrt the hidden credential
+    fn generate_constraints(self, cs: ConstraintSystemRef<BlsFr>) -> Result<(), SynthesisError> {
+        // Get hidden common input and public input
+        let priv_id_var = PrivateIdVar::new_input(ns!(cs, "private id"), &self.priv_id)?;
+        let blocklist_elem_var =
+            BlocklistElemVar::new_input(ns!(cs, "blocklist elem"), &self.blocklist_elem)?;
+
+        // Make a Poseidon instance
+        let hash_ctx = PoseidonCtxVar::new(ns!(cs, "hash ctx"))?;
+
+        // Compute the session tag from the credential and session nonce and assert that the
+        // computed session tag is equal to the given session tag
+        let computed_sess_tag =
+            priv_id_var.compute_session_tag(&hash_ctx, blocklist_elem_var.sess_nonce)?;
+        computed_sess_tag.enforce_equal(&blocklist_elem_var.sess_tag)
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
     use crate::test_util::test_rng;
     use ark_relations::r1cs::ConstraintSystem;
+
+    #[test]
+    fn test_well_formedness() {
+        let mut rng = test_rng();
+
+        // Generate a fresh ID and associated blocklist element
+        let priv_id = PrivateId::gen(&mut rng);
+        let blocklist_elem = priv_id.gen_blocklist_elem(&mut rng);
+
+        // Ensure that tag well-formedness holds
+        let cs = ConstraintSystem::<BlsFr>::new_ref();
+        let circuit = TagWellformednessCircuit {
+            priv_id,
+            blocklist_elem,
+        };
+        circuit.generate_constraints(cs.clone()).unwrap();
+        assert!(cs.is_satisfied().unwrap());
+
+        // Now ensure that changing the tag to a random tag breaks this relation. Make the bad
+        // element
+        let mut bad_blocklist_elem = blocklist_elem;
+        bad_blocklist_elem.sess_tag = SessionTag(BlsFr::rand(&mut rng));
+        let circuit = TagWellformednessCircuit {
+            priv_id,
+            blocklist_elem: bad_blocklist_elem,
+        };
+
+        // Check that the circuit isn't satisfied
+        let cs = ConstraintSystem::<BlsFr>::new_ref();
+        circuit.generate_constraints(cs.clone()).unwrap();
+        assert!(!cs.is_satisfied().unwrap());
+    }
 
     #[test]
     fn test_blocklist() {
