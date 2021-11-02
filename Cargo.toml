@@ -19,6 +19,7 @@ ark-std = { version = "0.3", default-features = false }
 arkworks-gadgets = { git = "https://github.com/rozbb/arkworks-gadgets.git", branch = "pub-permute" }
 blake2 = "0.9"
 digest = "0.9"
+hiciap = { git = "ssh://git@github.com/rozbb/hiciap.git" }
 
 [features]
 default = ["asm", "parallel"]

@@ -1,3 +1,4 @@
+pub mod api;
 mod blocklist;
 mod issuance;
 mod util;
@@ -9,10 +10,7 @@ use crate::util::{BlsFr, BlsFrV};
 
 use ark_ff::UniformRand;
 use ark_r1cs_std::alloc::AllocVar;
-use ark_relations::{
-    ns,
-    r1cs::{Namespace, SynthesisError},
-};
+use ark_relations::r1cs::{Namespace, SynthesisError};
 use ark_std::rand::{CryptoRng, Rng};
 
 /// A user's private ID, aka credential. This is the ID that's used in all our proofs

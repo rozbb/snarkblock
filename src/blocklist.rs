@@ -156,7 +156,7 @@ impl PrivateIdVar {
 }
 
 #[derive(Clone)]
-pub(crate) struct Chunk(Vec<BlocklistElem>);
+pub(crate) struct Chunk(pub(crate) Vec<BlocklistElem>);
 
 impl Chunk {
     /// Returns a chunk of all-zero blocklist elements. These are invalid elements with

@@ -1,4 +1,4 @@
-use ark_bls12_381::Bls12_381;
+pub(crate) use ark_bls12_381::Bls12_381;
 use ark_ec::PairingEngine;
 use ark_ec::{
     group::Group,
