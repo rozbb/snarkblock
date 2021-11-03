@@ -165,6 +165,15 @@ impl Chunk {
         Chunk(vec![BlocklistElem::default(); size])
     }
 
+    /// Pads this chunk to the given chunk size. Panics if chunk_size < self.0.len()
+    pub(crate) fn pad_to(&mut self, chunk_size: usize) {
+        let padding_size = chunk_size
+            .checked_sub(self.0.len())
+            .expect("chunk slice too big");
+        self.0
+            .extend(core::iter::repeat(BlocklistElem::default()).take(padding_size));
+    }
+
     #[cfg(test)]
     pub(crate) fn gen_with_size<R: RngCore + CryptoRng>(rng: &mut R, size: usize) -> Chunk {
         let elems = core::iter::repeat_with(|| BlocklistElem::gen(rng))
@@ -229,14 +238,20 @@ impl ConstraintSynthesizer<BlsFr> for ChunkNonMembershipCircuit {
 /// `sess_tag = H(sp_id || sess_nonce || credential)` where `sp_id` is the (public) service
 /// provider ID, and credential is the hidden credential.
 #[derive(Clone, Default)]
-pub struct TagWellformednessCircuit {
+pub struct TagWellFormednessCircuit {
     // Hidden common inputs
     pub priv_id: PrivateId,
     // Public inputs
     pub blocklist_elem: BlocklistElem,
 }
 
-impl ConstraintSynthesizer<BlsFr> for TagWellformednessCircuit {
+impl TagWellFormednessCircuit {
+    pub(crate) fn new_placeholder() -> TagWellFormednessCircuit {
+        Self::default()
+    }
+}
+
+impl ConstraintSynthesizer<BlsFr> for TagWellFormednessCircuit {
     // The goal of this function is to prove that
     //     H(self.sp_id || self.sess_nonce || self.credential) = self.sess_tag,
     // i.e., that the given session tag is correctly constructed wrt the hidden credential
@@ -273,7 +288,7 @@ mod test {
 
         // Ensure that tag well-formedness holds
         let cs = ConstraintSystem::<BlsFr>::new_ref();
-        let circuit = TagWellformednessCircuit {
+        let circuit = TagWellFormednessCircuit {
             priv_id,
             blocklist_elem,
         };
@@ -284,7 +299,7 @@ mod test {
         // element
         let mut bad_blocklist_elem = blocklist_elem;
         bad_blocklist_elem.sess_tag = SessionTag(BlsFr::rand(&mut rng));
-        let circuit = TagWellformednessCircuit {
+        let circuit = TagWellFormednessCircuit {
             priv_id,
             blocklist_elem: bad_blocklist_elem,
         };

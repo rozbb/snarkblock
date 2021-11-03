@@ -23,13 +23,13 @@ use ark_std::rand::{CryptoRng, Rng, RngCore};
 
 type JubjubFr = <Jubjub as ProjectiveCurve>::ScalarField;
 #[derive(Clone)]
-pub(crate) struct SchnorrPrivkey(JubjubFr);
+pub struct SchnorrPrivkey(JubjubFr);
 #[derive(Clone, Default)]
-pub(crate) struct SchnorrPubkey(pub(crate) Jubjub);
+pub struct SchnorrPubkey(pub(crate) Jubjub);
 #[derive(Clone)]
 pub(crate) struct SchnorrPubkeyVar(JubjubVar);
 #[derive(Clone, Default)]
-pub(crate) struct SchnorrSignature {
+pub struct SchnorrSignature {
     /// Challenge
     e: JubjubFr,
     /// Response to challenge
