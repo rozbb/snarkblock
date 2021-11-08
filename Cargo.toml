@@ -20,6 +20,7 @@ arkworks-gadgets = { git = "https://github.com/rozbb/arkworks-gadgets.git", bran
 blake2 = "0.9"
 digest = "0.9"
 hiciap = { git = "ssh://git@github.com/rozbb/hiciap.git" }
+thiserror = "1"
 
 [features]
 default = ["asm", "parallel"]

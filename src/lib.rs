@@ -39,3 +39,9 @@ impl PrivateIdVar {
         Ok(PrivateIdVar(val))
     }
 }
+
+#[derive(thiserror::Error, Debug)]
+pub enum Error {
+    #[error("error in HiCIAP computation: {0}")]
+    HiciapError(#[from] hiciap::Error),
+}

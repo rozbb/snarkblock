@@ -2,7 +2,7 @@ use crate::{
     blocklist::{BlocklistElem, Chunk, ChunkNonMembershipCircuit, TagWellFormednessCircuit},
     issuance::{IssuanceOpening, OneofNSchnorrVerifyCircuit, SchnorrPubkey, SchnorrSignature},
     util::{Bls12_381, BlsFr},
-    PrivateId,
+    Error, PrivateId,
 };
 
 use core::iter;
@@ -12,7 +12,10 @@ use ark_groth16::Groth16;
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Read, SerializationError, Write};
 use ark_std::rand::{CryptoRng, RngCore};
-use hiciap::HiciapError;
+use hiciap::{
+    hiciap_prove, hiciap_verify, merlin::Transcript, HiciapProof, HiciapProvingKey, HiciapVerifKey,
+    HiddenInputOpening,
+};
 
 /// A Groth16 proving key specifically for issuance and tag well-formedness proofs
 #[derive(CanonicalSerialize, CanonicalDeserialize, Clone)]
@@ -58,7 +61,7 @@ pub fn chunk_setup<R: CryptoRng + RngCore>(
 }
 
 /// A proof nonmembership in a chunk
-pub struct ChunkProof(ark_groth16::Proof<Bls12_381>);
+pub type ChunkProof = ark_groth16::Proof<Bls12_381>;
 
 /// Holds the context to construct Snarkblock chunk proofs
 pub struct ChunkProver {
@@ -110,12 +113,12 @@ impl ChunkProver {
             priv_id: self.priv_id,
             chunk,
         };
-        Groth16::prove(&self.proving_key.pk, circuit, rng).map(ChunkProof)
+        Groth16::prove(&self.proving_key.pk, circuit, rng)
     }
 }
 
 /// A compressed value representing an entire chunk. This is used in verification
-pub struct PreparedChunk(hiciap::PreparedCircuitInput<Bls12_381>);
+pub type PreparedChunk = hiciap::PreparedCircuitInput<Bls12_381>;
 
 /// Holds the context to allow Snarkblock to verify chunks
 pub struct ChunkVerifCtx {
@@ -130,7 +133,7 @@ impl ChunkVerifCtx {
     ///
     /// # Panics
     /// Iff `chunk.len() > chunk_size`
-    pub fn prepare_chunk(&self, elems: &[BlocklistElem]) -> Result<PreparedChunk, HiciapError> {
+    pub fn prepare_chunk(&self, elems: &[BlocklistElem]) -> Result<PreparedChunk, Error> {
         // Pad the chunk to the appropriate length
         let mut chunk = Chunk(elems.to_vec());
         chunk.pad_to(self.verif_key.chunk_size);
@@ -143,7 +146,7 @@ impl ChunkVerifCtx {
             .cloned()
             .collect();
 
-        hiciap::prepare_circuit_input(&self.verif_key.vk, &serialized_chunk).map(PreparedChunk)
+        hiciap::prepare_circuit_input(&self.verif_key.vk, &serialized_chunk).map_err(Into::into)
     }
 }
 
@@ -235,5 +238,94 @@ impl IssuanceAndTagProver {
         };
 
         Groth16::prove(&self.proving_key.0, issuance_and_wf_circuit, rng).map(IssuanceAndTagProof)
+    }
+}
+
+pub struct AggChunkProof {
+    /// The proof of the aggregate of the chunks
+    hiciap_proof: HiciapProof<Bls12_381>,
+    /// The opening of the commitment to priv_id
+    opening: HiddenInputOpening<Bls12_381>,
+}
+
+pub struct AggChunkProvingKey(HiciapProvingKey<Bls12_381>);
+pub struct AggChunkVerifKey(HiciapVerifKey<Bls12_381>);
+
+pub struct AggChunkProver {
+    /// The user's private ID
+    pub priv_id: PrivateId,
+    /// Verification key for verifying the issuance-and-tag-well-formedness circuit
+    pub circuit_verif_key: ChunkVerifKey,
+    /// Key for proving aggregates
+    pub agg_proving_key: AggChunkProvingKey,
+}
+
+pub struct AggChunkVerifier {
+    /// Verification key for verifying the issuance-and-tag-well-formedness circuit
+    pub circuit_verif_key: ChunkVerifKey,
+    /// Key for verifying aggregates
+    pub agg_verif_key: AggChunkVerifKey,
+}
+
+/// A commitment to the entire blocklist. This must be updated every time the blocklist is updated
+pub struct BlocklistCom(hiciap::VerifierInputs<'static, Bls12_381>);
+
+impl BlocklistCom {
+    pub fn from_chunks(chunks: &mut Vec<PreparedChunk>, pk: &AggChunkProvingKey) -> BlocklistCom {
+        let mut inputs = hiciap::VerifierInputs::List(chunks);
+        inputs
+            .compress(&pk.0)
+            .expect("could not compress prepared chunk inputs");
+
+        match inputs {
+            hiciap::VerifierInputs::Com(a, b) => {
+                // We need to convince the compiler that the com is indeed 'static, so we
+                // reconstruct it from scratch.
+                let com: hiciap::VerifierInputs<'static, Bls12_381> =
+                    hiciap::VerifierInputs::Com(a, b);
+                BlocklistCom(com)
+            }
+            // This is impossible. The compress() method always produces a VerifierInputs::Com
+            _ => panic!("inputs did not compress"),
+        }
+    }
+}
+
+impl AggChunkProver {
+    /// Computes an aggregate proof of the given ChunkProofs
+    pub fn prove<R: CryptoRng + RngCore>(
+        &self,
+        rng: &mut R,
+        proofs: &mut [ChunkProof],
+        prepared_chunks: &mut Vec<PreparedChunk>,
+    ) -> Result<AggChunkProof, Error> {
+        let mut proof_transcript = Transcript::new(b"snarkblock-aggproof-chunk");
+        let (hiciap_proof, opening) = hiciap_prove(
+            rng,
+            &mut proof_transcript,
+            &self.agg_proving_key.0,
+            &self.circuit_verif_key.vk,
+            proofs,
+            Some(prepared_chunks),
+            self.priv_id.0,
+        )?;
+
+        Ok(AggChunkProof {
+            hiciap_proof,
+            opening,
+        })
+    }
+}
+
+impl AggChunkVerifier {
+    pub fn verify(&self, com: BlocklistCom, proof: &AggChunkProof) -> Result<bool, Error> {
+        let verif_transcript = Transcript::new(b"snarkblock-aggproof-chunk");
+        let mut verif_ctx = hiciap::VerifierCtx {
+            hiciap_vk: &self.agg_verif_key.0,
+            circuit_vk: &self.circuit_verif_key.vk,
+            pub_input: com.0,
+            verif_transcript,
+        };
+        hiciap_verify(&mut verif_ctx, &proof.hiciap_proof).map_err(Into::into)
     }
 }
