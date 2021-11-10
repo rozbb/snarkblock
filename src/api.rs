@@ -27,16 +27,27 @@ use hiciap::{
     HiciapProof, HiciapProvingKey, HiciapVerifKey, HiddenInputOpening,
 };
 
-/// A Groth16 proving key specifically for issuance and tag well-formedness proofs
+/// A Groth16 proving key specifically for issuance-and-tag well-formedness proofs
 #[derive(CanonicalSerialize, CanonicalDeserialize, Clone)]
-pub struct IssuanceAndTagProvingKey(ark_groth16::ProvingKey<Bls12_381>);
+pub struct IssuanceAndWfProvingKey(ark_groth16::ProvingKey<Bls12_381>);
 
-/// A Groth16 verifying key specifically for issuance and tag well-formedness proofs
+/// A Groth16 verifying key specifically for issuance-and-tag well-formedness proofs
 #[derive(CanonicalSerialize, CanonicalDeserialize, Clone)]
-pub struct IssuanceAndTagVerifKey(ark_groth16::VerifyingKey<Bls12_381>);
+pub struct IssuanceAndWfVerifKey(ark_groth16::VerifyingKey<Bls12_381>);
 
 /// A proof of issuance and tag well-formedness
-pub struct IssuanceAndTagProof(ark_groth16::Proof<Bls12_381>);
+pub struct IssuanceAndWfProof(ark_groth16::Proof<Bls12_381>);
+
+/// Returns a pubkey-list-size-specific issuance-and-tag-well-formedenss proving key and verifying key
+pub fn issuance_and_wf_setup<R: CryptoRng + RngCore>(
+    rng: &mut R,
+    num_pubkeys: usize,
+) -> (IssuanceAndWfProvingKey, IssuanceAndWfVerifKey) {
+    let circuit = IssuanceAndWfWfCircuit::new_placeholder(num_pubkeys);
+    let (pk, vk) = Groth16::setup(circuit, rng).expect("couldn't setup chunk circuit");
+
+    (IssuanceAndWfProvingKey(pk), IssuanceAndWfVerifKey(vk))
+}
 
 /// A Groth16 proving key specifically for chunk proofs
 #[derive(CanonicalSerialize, CanonicalDeserialize, Clone)]
@@ -130,13 +141,13 @@ impl ChunkProver {
 /// A compressed value representing an entire chunk. This is used in verification
 pub type PreparedChunk = hiciap::PreparedCircuitInput<Bls12_381>;
 
-/// Holds the context to allow Snarkblock to verify chunks
-pub struct ChunkVerifCtx {
+/// Holds the context to allow Snarkblock to prepare chunks for verification
+pub struct ChunkPreparer {
     /// The proving key for chunk proofs
     pub verif_key: ChunkVerifKey,
 }
 
-impl ChunkVerifCtx {
+impl ChunkPreparer {
     /// Prepares a chunk into a form that can be used for HiCIAP verification. If `chunk.len() <
     /// chunk_size`, then the chunk will be right-padded with the appropriate number of null
     /// blocklist elements.
@@ -162,26 +173,26 @@ impl ChunkVerifCtx {
 
 /// This circuit proves the conjunction of the OneofNSchnorrVerifyCircuit and
 /// TagWellFormednessCircuit
-pub(crate) struct IssuanceAndTagWfCircuit {
+pub(crate) struct IssuanceAndWfWfCircuit {
     pub issuance_circuit: OneofNSchnorrVerifyCircuit,
     pub wf_circuit: TagWellFormednessCircuit,
 }
 
-impl IssuanceAndTagWfCircuit {
+impl IssuanceAndWfWfCircuit {
     /// Returns a placeholder circuit where only `num_pubkeys` is set. This is used for circuit
     /// parameter generation.
-    fn new_placeholder(num_pubkeys: usize) -> IssuanceAndTagWfCircuit {
+    fn new_placeholder(num_pubkeys: usize) -> IssuanceAndWfWfCircuit {
         let issuance_circuit = OneofNSchnorrVerifyCircuit::new_placeholder(num_pubkeys);
         let wf_circuit = TagWellFormednessCircuit::new_placeholder();
 
-        IssuanceAndTagWfCircuit {
+        IssuanceAndWfWfCircuit {
             issuance_circuit,
             wf_circuit,
         }
     }
 }
 
-impl ConstraintSynthesizer<BlsFr> for IssuanceAndTagWfCircuit {
+impl ConstraintSynthesizer<BlsFr> for IssuanceAndWfWfCircuit {
     fn generate_constraints(self, cs: ConstraintSystemRef<BlsFr>) -> Result<(), SynthesisError> {
         // Check that the private IDs of the subcircuits are the same
         assert_eq!(
@@ -206,8 +217,8 @@ impl ConstraintSynthesizer<BlsFr> for IssuanceAndTagWfCircuit {
         // Witness the hidden inputs
         let sig_var =
             SchnorrSignatureVar::new_witness(ns!(cs, "sig var"), &self.issuance_circuit.sig)?;
-        let opening_var = BlsFrV::new_witness(ns!(cs, "opening var"), || {
-            Ok(self.issuance_circuit.opening.0)
+        let priv_id_opening_var = BlsFrV::new_witness(ns!(cs, "priv_id opening var"), || {
+            Ok(self.issuance_circuit.priv_id_opening.0)
         })?;
         let pubkey_selector_var = self
             .issuance_circuit
@@ -229,7 +240,7 @@ impl ConstraintSynthesizer<BlsFr> for IssuanceAndTagWfCircuit {
             priv_id_var,
             pubkey_vars,
             sig_var,
-            opening_var,
+            priv_id_opening_var,
             pubkey_selector_var,
             hash_ctx,
         )
@@ -237,7 +248,7 @@ impl ConstraintSynthesizer<BlsFr> for IssuanceAndTagWfCircuit {
 }
 
 /// Holds the context for proving the issuance-and-tag-well-formedness statement
-pub struct IssuanceAndTagProver {
+pub struct IssuanceAndWfProver {
     /// The user's private ID
     pub priv_id: PrivateId,
     // The set of verifier keys that could have signed a commitment to msg
@@ -245,27 +256,27 @@ pub struct IssuanceAndTagProver {
     // The the pubkey being used for verification
     pub signers_pubkey_idx: u16,
     // The opnening to a commitment to priv_id
-    pub opening: IssuanceOpening,
+    pub priv_id_opening: IssuanceOpening,
     // A signature over Com(priv_id; com_opening) wrt the pubkey selected by pubkey_selector
     pub sig: SchnorrSignature,
     /// The proving key for issuance-and-tag-well-formedness proofs
-    pub proving_key: IssuanceAndTagProvingKey,
+    pub proving_key: IssuanceAndWfProvingKey,
 }
 
-impl IssuanceAndTagProver {
+impl IssuanceAndWfProver {
     /// Computes a proof that 1) the private ID has been issued by an issuer in `pubkeys`, and
     /// 2) the given private ID has produced the given blocklist element.
     pub fn prove<R: CryptoRng + RngCore>(
         &self,
         rng: &mut R,
         blocklist_elem: BlocklistElem,
-    ) -> Result<IssuanceAndTagProof, SynthesisError> {
+    ) -> Result<IssuanceAndWfProof, SynthesisError> {
         // Construct the subcircuits
         let issuance_circuit = OneofNSchnorrVerifyCircuit::new(
             self.pubkeys.clone(),
             self.signers_pubkey_idx,
             self.priv_id,
-            self.opening.clone(),
+            self.priv_id_opening.clone(),
             self.sig.clone(),
         );
         let wf_circuit = TagWellFormednessCircuit {
@@ -274,18 +285,21 @@ impl IssuanceAndTagProver {
         };
 
         // Combine the subcircuits and prove it
-        let issuance_and_wf_circuit = IssuanceAndTagWfCircuit {
+        let issuance_and_wf_circuit = IssuanceAndWfWfCircuit {
             issuance_circuit,
             wf_circuit,
         };
-        Groth16::prove(&self.proving_key.0, issuance_and_wf_circuit, rng).map(IssuanceAndTagProof)
+        Groth16::prove(&self.proving_key.0, issuance_and_wf_circuit, rng).map(IssuanceAndWfProof)
     }
 }
 
-pub struct AggIatProvingKey(HiciapProvingKey<Bls12_381>);
-pub struct AggIatVerifKey(HiciapVerifKey<Bls12_381>);
+/// A HiCIAP proving key for aggregating issuance-and-tag-well-formedness proofs
+pub struct AggIwfProvingKey(HiciapProvingKey<Bls12_381>);
+/// A HiCIAP verifying key for aggregated issuance-and-tag-well-formedness proofs
+pub struct AggIwfVerifKey(HiciapVerifKey<Bls12_381>);
 
-pub struct AggIatProver {
+/// A struct for turning `IssuanceAndWfProof`s into HiCIAP proofs of the same statement
+pub struct AggIwfProver {
     /// The user's private ID
     pub priv_id: PrivateId,
     /// Verification key for verifying the issuance-and-tag-well-formedness circuit
@@ -294,36 +308,38 @@ pub struct AggIatProver {
     pub agg_proving_key: AggChunkProvingKey,
 }
 
-pub struct AggIatVerifier {
+/// A struct for verifying `AggIwfProof`s
+pub struct AggIwfVerifier {
     // The set of verifier keys that could have signed a commitment to msg
     pub pubkeys: Vec<SchnorrPubkey>,
     /// Verification key for verifying the issuance-and-tag-well-formedness circuit
-    pub circuit_verif_key: IssuanceAndTagVerifKey,
+    pub circuit_verif_key: IssuanceAndWfVerifKey,
     /// Key for verifying aggregates
-    pub agg_verif_key: AggIatVerifKey,
+    pub agg_verif_key: AggIwfVerifKey,
 }
 
-pub struct AggIatProof {
+/// A HiCIAP proof of issuance-and-tag-well-formedness
+pub struct AggIwfProof {
     /// The proof of the aggregate of the IAT circuit proofs
     hiciap_proof: HiciapProof<Bls12_381>,
     /// The opening of the commitment to priv_id
-    opening: HiddenInputOpening<Bls12_381>,
+    priv_id_opening: HiddenInputOpening<Bls12_381>,
 }
 
-impl AggIatProver {
+impl AggIwfProver {
     /// Computes an aggregate proof of the given ChunkProofs
     pub fn prove<R: CryptoRng + RngCore>(
         &self,
         rng: &mut R,
-        proof: &IssuanceAndTagProof,
-    ) -> Result<AggIatProof, Error> {
+        proof: &IssuanceAndWfProof,
+    ) -> Result<AggIwfProof, Error> {
         // HiCIAP requires a minimum of 14 proofs to function
         let mut proof_vec = vec![proof.0.clone(); 14];
 
         let mut proof_transcript = Transcript::new(b"snarkblock-aggproof-iat");
 
         // Do a no-CSM proof for the issuance-and-tag
-        let (hiciap_proof, opening) = hiciap_prove(
+        let (hiciap_proof, priv_id_opening) = hiciap_prove(
             rng,
             &mut proof_transcript,
             &self.agg_proving_key.0,
@@ -333,14 +349,14 @@ impl AggIatProver {
             self.priv_id.0,
         )?;
 
-        Ok(AggIatProof {
+        Ok(AggIwfProof {
             hiciap_proof,
-            opening,
+            priv_id_opening,
         })
     }
 }
 
-impl AggIatVerifier {
+impl AggIwfVerifier {
     // TODO: Do the input preprocessing beforehand
     pub fn verify(&self, new_elem: &BlocklistElem, proof: &AggChunkProof) -> Result<bool, Error> {
         let mut verif_transcript = Transcript::new(b"snarkblock-aggproof-chunk");
@@ -371,37 +387,14 @@ impl AggIatVerifier {
     }
 }
 
-pub struct AggChunkProvingKey(HiciapProvingKey<Bls12_381>);
-pub struct AggChunkVerifKey(HiciapVerifKey<Bls12_381>);
-
-pub struct AggChunkProof {
-    /// The proof of the aggregate of the chunks
-    hiciap_proof: HiciapProof<Bls12_381>,
-    /// The opening of the commitment to priv_id
-    opening: HiddenInputOpening<Bls12_381>,
-}
-
-pub struct AggChunkProver {
-    /// The user's private ID
-    pub priv_id: PrivateId,
-    /// Verification key for verifying the issuance-and-tag-well-formedness circuit
-    pub circuit_verif_key: ChunkVerifKey,
-    /// Key for proving aggregates
-    pub agg_proving_key: AggChunkProvingKey,
-}
-
-pub struct AggChunkVerifier {
-    /// Verification key for verifying the issuance-and-tag-well-formedness circuit
-    pub circuit_verif_key: ChunkVerifKey,
-    /// Key for verifying aggregates
-    pub agg_verif_key: AggChunkVerifKey,
-}
-
 /// A commitment to the entire blocklist. This must be updated every time the blocklist is updated
 pub struct BlocklistCom(hiciap::VerifierInputs<'static, Bls12_381>);
 
 impl BlocklistCom {
-    pub fn from_chunks(chunks: &mut Vec<PreparedChunk>, pk: &AggChunkProvingKey) -> BlocklistCom {
+    pub fn from_prepared_chunks(
+        chunks: &mut Vec<PreparedChunk>,
+        pk: &AggChunkProvingKey,
+    ) -> BlocklistCom {
         let mut inputs = hiciap::VerifierInputs::List(chunks);
         inputs
             .compress(&pk.0)
@@ -421,6 +414,37 @@ impl BlocklistCom {
     }
 }
 
+/// A HiCIAP proving key for aggregating chunk non-membership proofs
+pub struct AggChunkProvingKey(HiciapProvingKey<Bls12_381>);
+/// A HiCIAP verifying key for aggregated chunk non-membership proofs
+pub struct AggChunkVerifKey(HiciapVerifKey<Bls12_381>);
+
+/// An aggregate of chunk non-membership proofs
+pub struct AggChunkProof {
+    /// The proof of the aggregate of the chunks
+    hiciap_proof: HiciapProof<Bls12_381>,
+    /// The opening of the commitment to priv_id
+    priv_id_opening: HiddenInputOpening<Bls12_381>,
+}
+
+/// A struct for aggregating `ChunkProof`s into a single `AggChunkProof`
+pub struct AggChunkProver {
+    /// The user's private ID
+    pub priv_id: PrivateId,
+    /// Verification key for verifying the issuance-and-tag-well-formedness circuit
+    pub circuit_verif_key: ChunkVerifKey,
+    /// Key for proving aggregates
+    pub agg_proving_key: AggChunkProvingKey,
+}
+
+/// A struct for verifying `AggChunkProof`s
+pub struct AggChunkVerifier {
+    /// Verification key for verifying the issuance-and-tag-well-formedness circuit
+    pub circuit_verif_key: ChunkVerifKey,
+    /// Key for verifying aggregates
+    pub agg_verif_key: AggChunkVerifKey,
+}
+
 impl AggChunkProver {
     /// Computes an aggregate proof of the given ChunkProofs
     pub fn prove<R: CryptoRng + RngCore>(
@@ -430,7 +454,7 @@ impl AggChunkProver {
         prepared_chunks: &mut Vec<PreparedChunk>,
     ) -> Result<AggChunkProof, Error> {
         let mut proof_transcript = Transcript::new(b"snarkblock-aggproof-chunk");
-        let (hiciap_proof, opening) = hiciap_prove(
+        let (hiciap_proof, priv_id_opening) = hiciap_prove(
             rng,
             &mut proof_transcript,
             &self.agg_proving_key.0,
@@ -442,7 +466,7 @@ impl AggChunkProver {
 
         Ok(AggChunkProof {
             hiciap_proof,
-            opening,
+            priv_id_opening,
         })
     }
 }
@@ -462,23 +486,23 @@ impl AggChunkVerifier {
 
 pub struct SnarkblockProof {
     chunk_proofs: Vec<AggChunkProof>,
-    issuance_and_tag_proof: AggIatProof,
+    issuance_and_tag_proof: AggIwfProof,
     linkage_proof: LinkageProof<Bls12_381>,
 }
 
 pub fn snarkblock_link<R: CryptoRng + RngCore>(
     rng: &mut R,
-    issuance_and_tag_proof: AggIatProof,
+    issuance_and_tag_proof: AggIwfProof,
     chunk_proofs: Vec<AggChunkProof>,
 ) -> SnarkblockProof {
     let proof_data: Vec<(&HiciapProof<Bls12_381>, &HiddenInputOpening<Bls12_381>)> = iter::once((
         &issuance_and_tag_proof.hiciap_proof,
-        &issuance_and_tag_proof.opening,
+        &issuance_and_tag_proof.priv_id_opening,
     ))
     .chain(
         chunk_proofs
             .iter()
-            .map(|cp| (&cp.hiciap_proof, &cp.opening)),
+            .map(|cp| (&cp.hiciap_proof, &cp.priv_id_opening)),
     )
     .collect();
     let linkage_proof = hiciap_link(rng, &proof_data);

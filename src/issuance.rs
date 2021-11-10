@@ -227,10 +227,10 @@ impl PrivateId {
         let hash_ctx = PoseidonCtx::new();
 
         // Make a random commitment to this private ID
-        let opening = BlsFr::rand(rng);
-        let com = hash_ctx.com(self.0, opening);
+        let priv_id_opening = BlsFr::rand(rng);
+        let com = hash_ctx.com(self.0, priv_id_opening);
 
-        (IssuanceReq(com), IssuanceOpening(opening))
+        (IssuanceReq(com), IssuanceOpening(priv_id_opening))
     }
 }
 
@@ -247,7 +247,7 @@ pub(crate) struct OneofNSchnorrVerifyCircuit {
     // The one-hot encoding of the pubkey being used for verification
     pub pubkey_selector: Vec<bool>,
     // The opnening to a commitment to priv_id
-    pub opening: IssuanceOpening,
+    pub priv_id_opening: IssuanceOpening,
     // A signature over Com(priv_id; com_opening) wrt the pubkey selected by pubkey_selector
     pub sig: SchnorrSignature,
 }
@@ -259,7 +259,7 @@ impl OneofNSchnorrVerifyCircuit {
         pubkeys: Vec<SchnorrPubkey>,
         signers_pubkey_idx: u16,
         priv_id: PrivateId,
-        opening: IssuanceOpening,
+        priv_id_opening: IssuanceOpening,
         sig: SchnorrSignature,
     ) -> OneofNSchnorrVerifyCircuit {
         // Signer's index must be valid
@@ -276,7 +276,7 @@ impl OneofNSchnorrVerifyCircuit {
             pubkeys,
             pubkey_selector,
             priv_id,
-            opening,
+            priv_id_opening,
             sig,
         }
     }
@@ -288,7 +288,7 @@ impl OneofNSchnorrVerifyCircuit {
             pubkeys: vec![SchnorrPubkey::default(); num_pubkeys],
             pubkey_selector: vec![false; num_pubkeys],
             priv_id: PrivateId::default(),
-            opening: IssuanceOpening::default(),
+            priv_id_opening: IssuanceOpening::default(),
             sig: SchnorrSignature::default(),
         }
     }
@@ -297,13 +297,13 @@ impl OneofNSchnorrVerifyCircuit {
         priv_id_var: PrivateIdVar,
         pubkey_vars: Vec<SchnorrPubkeyVar>,
         sig_var: SchnorrSignatureVar,
-        opening_var: BlsFrV,
+        priv_id_opening_var: BlsFrV,
         pubkey_selector_var: Vec<Boolean<BlsFr>>,
         hash_ctx: PoseidonCtxVar,
     ) -> Result<(), SynthesisError> {
         // Calculate the commitment com = H(nonce || msg). This is the thing that was signed by the
         // issuer
-        let com_var = hash_ctx.com(priv_id_var.0, opening_var)?;
+        let com_var = hash_ctx.com(priv_id_var.0, priv_id_opening_var)?;
 
         // Ensure that the encoding has exactly 1 bit set
         enforce_one_hot(&pubkey_selector_var)?;
@@ -334,7 +334,9 @@ impl ConstraintSynthesizer<BlsFr> for OneofNSchnorrVerifyCircuit {
 
         // Witness the hidden inputs
         let sig_var = SchnorrSignatureVar::new_witness(ns!(cs, "sig var"), &self.sig)?;
-        let opening_var = BlsFrV::new_witness(ns!(cs, "opening var"), || Ok(self.opening.0))?;
+        let priv_id_opening_var = BlsFrV::new_witness(ns!(cs, "priv_id opening var"), || {
+            Ok(self.priv_id_opening.0)
+        })?;
         let pubkey_selector_var = self
             .pubkey_selector
             .iter()
@@ -347,7 +349,7 @@ impl ConstraintSynthesizer<BlsFr> for OneofNSchnorrVerifyCircuit {
             priv_id_var,
             pubkey_vars,
             sig_var,
-            opening_var,
+            priv_id_opening_var,
             pubkey_selector_var,
             hash_ctx,
         )
