@@ -3,7 +3,7 @@ use crate::{
     PrivateId, PrivateIdVar,
 };
 
-use ark_ff::{PrimeField, UniformRand, Zero};
+use ark_ff::{PrimeField, ToConstraintField, UniformRand, Zero};
 use ark_r1cs_std::{alloc::AllocVar, boolean::Boolean, eq::EqGadget, R1CSVar};
 use ark_relations::{
     ns,
@@ -69,6 +69,13 @@ impl Default for BlocklistElem {
             sess_nonce: SessionNonce(BlsFr::zero()),
             sess_tag: SessionTag(BlsFr::zero()),
         }
+    }
+}
+
+// Define a way to serialize a blocklist element for HiCIAP verification
+impl ToConstraintField<BlsFr> for BlocklistElem {
+    fn to_field_elements(&self) -> Option<Vec<BlsFr>> {
+        Some(vec![self.sess_nonce.0, self.sess_tag.0])
     }
 }
 

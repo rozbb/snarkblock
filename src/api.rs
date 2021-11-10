@@ -8,13 +8,16 @@ use crate::{
 use core::iter;
 
 use ark_crypto_primitives::snark::{CircuitSpecificSetupSNARK, SNARK};
+use ark_ff::ToConstraintField;
 use ark_groth16::Groth16;
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Read, SerializationError, Write};
 use ark_std::rand::{CryptoRng, RngCore};
 use hiciap::{
-    hiciap_prove, hiciap_verify, merlin::Transcript, HiciapProof, HiciapProvingKey, HiciapVerifKey,
-    HiddenInputOpening,
+    hiciap_prove, hiciap_verify,
+    linkage::{hiciap_link, LinkageProof},
+    merlin::Transcript,
+    HiciapProof, HiciapProvingKey, HiciapVerifKey, HiddenInputOpening,
 };
 
 /// A Groth16 proving key specifically for issuance and tag well-formedness proofs
@@ -152,44 +155,26 @@ impl ChunkVerifCtx {
 
 /// This circuit proves the conjunction of the OneofNSchnorrVerifyCircuit and
 /// TagWellFormednessCircuit
-pub(crate) struct IssuanceAndWfCircuit {
+pub(crate) struct IssuanceAndTagWfCircuit {
     pub issuance_circuit: OneofNSchnorrVerifyCircuit,
     pub wf_circuit: TagWellFormednessCircuit,
 }
 
-impl IssuanceAndWfCircuit {
-    /*
-    fn new(
-        priv_id: PrivateId,
-        proving_key: IssuanceAndTagProvingKey,
-        pubkeys: Vec<SchnorrPubkey>,
-        signers_pubkey_idx: u16,
-        opening: IssuanceOpening,
-        sig: SchnorrSignature,
-    ) -> IssuanceAndWfCircuit {
-        let issuance_circuit =
-            OneofNSchnorrVerifyCircuit::new(pubkeys, signers_pubkey_idx, priv_id, opening, sig);
-        let wf_circuit = TagWellFormednessCircuit {
-            priv_id,
-            blocklist_elem,
-        };
-    }
-    */
-
+impl IssuanceAndTagWfCircuit {
     /// Returns a placeholder circuit where only `num_pubkeys` is set. This is used for circuit
     /// parameter generation.
-    fn new_placeholder(num_pubkeys: usize) -> IssuanceAndWfCircuit {
+    fn new_placeholder(num_pubkeys: usize) -> IssuanceAndTagWfCircuit {
         let issuance_circuit = OneofNSchnorrVerifyCircuit::new_placeholder(num_pubkeys);
         let wf_circuit = TagWellFormednessCircuit::new_placeholder();
 
-        IssuanceAndWfCircuit {
+        IssuanceAndTagWfCircuit {
             issuance_circuit,
             wf_circuit,
         }
     }
 }
 
-impl ConstraintSynthesizer<BlsFr> for IssuanceAndWfCircuit {
+impl ConstraintSynthesizer<BlsFr> for IssuanceAndTagWfCircuit {
     fn generate_constraints(self, cs: ConstraintSystemRef<BlsFr>) -> Result<(), SynthesisError> {
         self.issuance_circuit.generate_constraints(cs.clone())?;
         self.wf_circuit.generate_constraints(cs)
@@ -220,7 +205,7 @@ impl IssuanceAndTagProver {
         rng: &mut R,
         blocklist_elem: BlocklistElem,
     ) -> Result<IssuanceAndTagProof, SynthesisError> {
-        // Construct the circuit and prove it
+        // Construct the subcircuits
         let issuance_circuit = OneofNSchnorrVerifyCircuit::new(
             self.pubkeys.clone(),
             self.signers_pubkey_idx,
@@ -232,14 +217,107 @@ impl IssuanceAndTagProver {
             priv_id: self.priv_id,
             blocklist_elem,
         };
-        let issuance_and_wf_circuit = IssuanceAndWfCircuit {
+
+        // Combine the subcircuits and prove it
+        let issuance_and_wf_circuit = IssuanceAndTagWfCircuit {
             issuance_circuit,
             wf_circuit,
         };
-
         Groth16::prove(&self.proving_key.0, issuance_and_wf_circuit, rng).map(IssuanceAndTagProof)
     }
 }
+
+pub struct AggIatProvingKey(HiciapProvingKey<Bls12_381>);
+pub struct AggIatVerifKey(HiciapVerifKey<Bls12_381>);
+
+pub struct AggIatProver {
+    /// The user's private ID
+    pub priv_id: PrivateId,
+    /// Verification key for verifying the issuance-and-tag-well-formedness circuit
+    pub circuit_verif_key: ChunkVerifKey,
+    /// Key for proving aggregates
+    pub agg_proving_key: AggChunkProvingKey,
+}
+
+pub struct AggIatVerifier {
+    // The set of verifier keys that could have signed a commitment to msg
+    pub pubkeys: Vec<SchnorrPubkey>,
+    /// Verification key for verifying the issuance-and-tag-well-formedness circuit
+    pub circuit_verif_key: IssuanceAndTagVerifKey,
+    /// Key for verifying aggregates
+    pub agg_verif_key: AggIatVerifKey,
+}
+
+pub struct AggIatProof {
+    /// The proof of the aggregate of the IAT circuit proofs
+    hiciap_proof: HiciapProof<Bls12_381>,
+    /// The opening of the commitment to priv_id
+    opening: HiddenInputOpening<Bls12_381>,
+}
+
+impl AggIatProver {
+    /// Computes an aggregate proof of the given ChunkProofs
+    pub fn prove<R: CryptoRng + RngCore>(
+        &self,
+        rng: &mut R,
+        proof: &IssuanceAndTagProof,
+    ) -> Result<AggIatProof, Error> {
+        // HiCIAP requires a minimum of 14 proofs to function
+        let mut proof_vec = vec![proof.0.clone(); 14];
+
+        let mut proof_transcript = Transcript::new(b"snarkblock-aggproof-iat");
+
+        // Do a no-CSM proof for the issuance-and-tag
+        let (hiciap_proof, opening) = hiciap_prove(
+            rng,
+            &mut proof_transcript,
+            &self.agg_proving_key.0,
+            &self.circuit_verif_key.vk,
+            proof_vec.as_mut_slice(),
+            None,
+            self.priv_id.0,
+        )?;
+
+        Ok(AggIatProof {
+            hiciap_proof,
+            opening,
+        })
+    }
+}
+
+impl AggIatVerifier {
+    // TODO: Do the input preprocessing beforehand
+    pub fn verify(&self, new_elem: &BlocklistElem, proof: &AggChunkProof) -> Result<bool, Error> {
+        let mut verif_transcript = Transcript::new(b"snarkblock-aggproof-chunk");
+
+        // The public input to a single issuance-and-tag-well-formedness circuit is the pubkeys
+        // followed by the blocklisted element
+        let single_circuit_input: Vec<BlsFr> = self
+            .pubkeys
+            .iter()
+            .flat_map(|pk| pk.0.to_field_elements().unwrap())
+            .chain(new_elem.to_field_elements().unwrap().into_iter())
+            .collect();
+        let prepared_circuit_input =
+            hiciap::prepare_circuit_input(&self.circuit_verif_key.0, &single_circuit_input)?;
+
+        // We have 14 copies of the same circuit because HiCIAP needs at least that many
+        let mut prepared_circuit_inputs = vec![prepared_circuit_input; 14];
+        let verifier_inputs = hiciap::VerifierInputs::List(&mut prepared_circuit_inputs);
+
+        // Now make the verifier context and prove
+        let mut verif_ctx = hiciap::VerifierCtx {
+            hiciap_vk: &self.agg_verif_key.0,
+            circuit_vk: &self.circuit_verif_key.0,
+            pub_input: verifier_inputs,
+        };
+        hiciap_verify(&mut verif_ctx, &mut verif_transcript, &proof.hiciap_proof)
+            .map_err(Into::into)
+    }
+}
+
+pub struct AggChunkProvingKey(HiciapProvingKey<Bls12_381>);
+pub struct AggChunkVerifKey(HiciapVerifKey<Bls12_381>);
 
 pub struct AggChunkProof {
     /// The proof of the aggregate of the chunks
@@ -247,9 +325,6 @@ pub struct AggChunkProof {
     /// The opening of the commitment to priv_id
     opening: HiddenInputOpening<Bls12_381>,
 }
-
-pub struct AggChunkProvingKey(HiciapProvingKey<Bls12_381>);
-pub struct AggChunkVerifKey(HiciapVerifKey<Bls12_381>);
 
 pub struct AggChunkProver {
     /// The user's private ID
@@ -319,13 +394,43 @@ impl AggChunkProver {
 
 impl AggChunkVerifier {
     pub fn verify(&self, com: BlocklistCom, proof: &AggChunkProof) -> Result<bool, Error> {
-        let verif_transcript = Transcript::new(b"snarkblock-aggproof-chunk");
+        let mut verif_transcript = Transcript::new(b"snarkblock-aggproof-chunk");
         let mut verif_ctx = hiciap::VerifierCtx {
             hiciap_vk: &self.agg_verif_key.0,
             circuit_vk: &self.circuit_verif_key.vk,
             pub_input: com.0,
-            verif_transcript,
         };
-        hiciap_verify(&mut verif_ctx, &proof.hiciap_proof).map_err(Into::into)
+        hiciap_verify(&mut verif_ctx, &mut verif_transcript, &proof.hiciap_proof)
+            .map_err(Into::into)
+    }
+}
+
+pub struct SnarkblockProof {
+    chunk_proofs: Vec<AggChunkProof>,
+    issuance_and_tag_proof: AggIatProof,
+    linkage_proof: LinkageProof<Bls12_381>,
+}
+
+pub fn snarkblock_link<R: CryptoRng + RngCore>(
+    rng: &mut R,
+    issuance_and_tag_proof: AggIatProof,
+    chunk_proofs: Vec<AggChunkProof>,
+) -> SnarkblockProof {
+    let proof_data: Vec<(&HiciapProof<Bls12_381>, &HiddenInputOpening<Bls12_381>)> = iter::once((
+        &issuance_and_tag_proof.hiciap_proof,
+        &issuance_and_tag_proof.opening,
+    ))
+    .chain(
+        chunk_proofs
+            .iter()
+            .map(|cp| (&cp.hiciap_proof, &cp.opening)),
+    )
+    .collect();
+    let linkage_proof = hiciap_link(rng, &proof_data);
+
+    SnarkblockProof {
+        chunk_proofs,
+        issuance_and_tag_proof,
+        linkage_proof,
     }
 }
