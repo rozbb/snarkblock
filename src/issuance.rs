@@ -215,7 +215,7 @@ pub struct IssuanceReq(BlsFr);
 
 #[derive(Clone, CanonicalSerialize, CanonicalDeserialize, Default)]
 /// The opening to a private ID commitment
-pub struct IssuanceOpening(BlsFr);
+pub struct IssuanceOpening(pub(crate) BlsFr);
 
 impl PrivateId {
     /// Constructs an issuance request for this private ID. Returns the secret opening for the
@@ -292,6 +292,34 @@ impl OneofNSchnorrVerifyCircuit {
             sig: SchnorrSignature::default(),
         }
     }
+
+    pub(crate) fn generate_constraints_preallocated(
+        priv_id_var: PrivateIdVar,
+        pubkey_vars: Vec<SchnorrPubkeyVar>,
+        sig_var: SchnorrSignatureVar,
+        opening_var: BlsFrV,
+        pubkey_selector_var: Vec<Boolean<BlsFr>>,
+        hash_ctx: PoseidonCtxVar,
+    ) -> Result<(), SynthesisError> {
+        // Calculate the commitment com = H(nonce || msg). This is the thing that was signed by the
+        // issuer
+        let com_var = hash_ctx.com(priv_id_var.0, opening_var)?;
+
+        // Ensure that the encoding has exactly 1 bit set
+        enforce_one_hot(&pubkey_selector_var)?;
+
+        // Now compute the verification pubkey by dotting the selector with the list of pubkeys.
+        // Since the selector is the one-hot encoding of signers_pubkey_idx, the final result will
+        // be selected_pubkey == pubkeys[signers_pubkey_idx].
+        let mut selected_pubkey = SchnorrPubkeyVar(JubjubVar::zero());
+        for (bit, pubkey) in pubkey_selector_var.iter().zip(pubkey_vars.iter()) {
+            selected_pubkey.0 += pubkey.0.scalar_mul_le(iter::once(bit))?;
+        }
+
+        // Assert that the signature verifies under the selected pubkey
+        let is_valid = selected_pubkey.verify(com_var, sig_var)?;
+        is_valid.enforce_equal(&Boolean::constant(true))
+    }
 }
 
 impl ConstraintSynthesizer<BlsFr> for OneofNSchnorrVerifyCircuit {
@@ -315,24 +343,14 @@ impl ConstraintSynthesizer<BlsFr> for OneofNSchnorrVerifyCircuit {
 
         let hash_ctx = PoseidonCtxVar::new(ns!(cs, "hash ctx"))?;
 
-        // Calculate the commitment com = H(nonce || msg). This is the thing that was signed by the
-        // issuer
-        let com_var = hash_ctx.com(priv_id_var.0, opening_var)?;
-
-        // Ensure that the encoding has exactly 1 bit set
-        enforce_one_hot(&pubkey_selector_var)?;
-
-        // Now compute the verification pubkey by dotting the selector with the list of pubkeys.
-        // Since the selector is the one-hot encoding of signers_pubkey_idx, the final result will
-        // be selected_pubkey == pubkeys[signers_pubkey_idx].
-        let mut selected_pubkey = SchnorrPubkeyVar(JubjubVar::zero());
-        for (bit, pubkey) in pubkey_selector_var.iter().zip(pubkey_vars.iter()) {
-            selected_pubkey.0 += pubkey.0.scalar_mul_le(iter::once(bit))?;
-        }
-
-        // Assert that the signature verifies under the selected pubkey
-        let is_valid = selected_pubkey.verify(com_var, sig_var)?;
-        is_valid.enforce_equal(&Boolean::constant(true))
+        Self::generate_constraints_preallocated(
+            priv_id_var,
+            pubkey_vars,
+            sig_var,
+            opening_var,
+            pubkey_selector_var,
+            hash_ctx,
+        )
     }
 }
 

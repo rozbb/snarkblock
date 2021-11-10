@@ -86,7 +86,7 @@ pub(crate) struct BlocklistElemVar {
 }
 
 impl BlocklistElemVar {
-    fn new_input(
+    pub(crate) fn new_input(
         cs: impl Into<Namespace<BlsFr>>,
         elem: &BlocklistElem,
     ) -> Result<BlocklistElemVar, SynthesisError> {
@@ -256,12 +256,25 @@ impl TagWellFormednessCircuit {
     pub(crate) fn new_placeholder() -> TagWellFormednessCircuit {
         Self::default()
     }
+
+    /// The main logic of the circuit. The goal of this function is to prove that
+    //     H(self.blocklist_elem.sess_nonce || self.priv_id) = self.sess_tag,
+    // i.e., that the given session tag is correctly constructed wrt the hidden credential
+    pub(crate) fn generate_constraints_preallocated(
+        priv_id_var: PrivateIdVar,
+        blocklist_elem_var: BlocklistElemVar,
+        hash_ctx: PoseidonCtxVar,
+    ) -> Result<(), SynthesisError> {
+        // Compute the session tag from the credential and session nonce and assert that the
+        // computed session tag is equal to the given session tag
+        let computed_sess_tag =
+            priv_id_var.compute_session_tag(&hash_ctx, blocklist_elem_var.sess_nonce)?;
+        computed_sess_tag.enforce_equal(&blocklist_elem_var.sess_tag)
+    }
 }
 
 impl ConstraintSynthesizer<BlsFr> for TagWellFormednessCircuit {
-    // The goal of this function is to prove that
-    //     H(self.sp_id || self.sess_nonce || self.credential) = self.sess_tag,
-    // i.e., that the given session tag is correctly constructed wrt the hidden credential
+    // Witness the variables and run generate_constraints_preallocated
     fn generate_constraints(self, cs: ConstraintSystemRef<BlsFr>) -> Result<(), SynthesisError> {
         // Get hidden common input and public input
         let priv_id_var = PrivateIdVar::new_input(ns!(cs, "private id"), &self.priv_id)?;
@@ -271,11 +284,8 @@ impl ConstraintSynthesizer<BlsFr> for TagWellFormednessCircuit {
         // Make a Poseidon instance
         let hash_ctx = PoseidonCtxVar::new(ns!(cs, "hash ctx"))?;
 
-        // Compute the session tag from the credential and session nonce and assert that the
-        // computed session tag is equal to the given session tag
-        let computed_sess_tag =
-            priv_id_var.compute_session_tag(&hash_ctx, blocklist_elem_var.sess_nonce)?;
-        computed_sess_tag.enforce_equal(&blocklist_elem_var.sess_tag)
+        // Run the logic
+        Self::generate_constraints_preallocated(priv_id_var, blocklist_elem_var, hash_ctx)
     }
 }
 

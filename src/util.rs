@@ -78,6 +78,7 @@ impl PoseidonCtx {
 }
 
 /// Provides all the Poseidon functionality we need in circuits
+#[derive(Clone)]
 pub(crate) struct PoseidonCtxVar(PoseidonParametersVar<BlsFr>);
 
 impl PoseidonCtxVar {

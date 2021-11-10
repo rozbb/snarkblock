@@ -14,8 +14,14 @@ use ark_relations::r1cs::{Namespace, SynthesisError};
 use ark_std::rand::{CryptoRng, Rng};
 
 /// A user's private ID, aka credential. This is the ID that's used in all our proofs
-#[derive(Copy, Clone, Default)]
+#[derive(Copy, Clone, Default, PartialEq, Eq)]
 pub struct PrivateId(pub BlsFr);
+
+impl core::fmt::Debug for PrivateId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> Result<(), core::fmt::Error> {
+        write!(f, "[private ID]")
+    }
+}
 
 impl PrivateId {
     pub fn gen<R: Rng + CryptoRng + ?Sized>(rng: &mut R) -> PrivateId {

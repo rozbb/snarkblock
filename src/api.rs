@@ -1,8 +1,13 @@
 use crate::{
-    blocklist::{BlocklistElem, Chunk, ChunkNonMembershipCircuit, TagWellFormednessCircuit},
-    issuance::{IssuanceOpening, OneofNSchnorrVerifyCircuit, SchnorrPubkey, SchnorrSignature},
-    util::{Bls12_381, BlsFr},
-    Error, PrivateId,
+    blocklist::{
+        BlocklistElem, BlocklistElemVar, Chunk, ChunkNonMembershipCircuit, TagWellFormednessCircuit,
+    },
+    issuance::{
+        IssuanceOpening, OneofNSchnorrVerifyCircuit, SchnorrPubkey, SchnorrPubkeyVar,
+        SchnorrSignature, SchnorrSignatureVar,
+    },
+    util::{Bls12_381, BlsFr, BlsFrV, PoseidonCtxVar},
+    Error, PrivateId, PrivateIdVar,
 };
 
 use core::iter;
@@ -10,6 +15,8 @@ use core::iter;
 use ark_crypto_primitives::snark::{CircuitSpecificSetupSNARK, SNARK};
 use ark_ff::ToConstraintField;
 use ark_groth16::Groth16;
+use ark_r1cs_std::{alloc::AllocVar, boolean::Boolean};
+use ark_relations::ns;
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Read, SerializationError, Write};
 use ark_std::rand::{CryptoRng, RngCore};
@@ -176,8 +183,56 @@ impl IssuanceAndTagWfCircuit {
 
 impl ConstraintSynthesizer<BlsFr> for IssuanceAndTagWfCircuit {
     fn generate_constraints(self, cs: ConstraintSystemRef<BlsFr>) -> Result<(), SynthesisError> {
-        self.issuance_circuit.generate_constraints(cs.clone())?;
-        self.wf_circuit.generate_constraints(cs)
+        // Check that the private IDs of the subcircuits are the same
+        assert_eq!(
+            self.issuance_circuit.priv_id, self.wf_circuit.priv_id,
+            "private IDs of issuance and well-formedness circuits differ"
+        );
+        let priv_id = self.issuance_circuit.priv_id;
+
+        // Get the public inputs: Private ID, pubkey list, new blocklist element
+        let priv_id_var = PrivateIdVar::new_input(ns!(cs, "priv_id var"), &priv_id)?;
+        let pubkey_vars = self
+            .issuance_circuit
+            .pubkeys
+            .iter()
+            .map(|pk| SchnorrPubkeyVar::new_input(ns!(cs, "pubkey var"), pk))
+            .collect::<Result<Vec<SchnorrPubkeyVar>, _>>()?;
+        let blocklist_elem_var = BlocklistElemVar::new_input(
+            ns!(cs, "blocklist elem"),
+            &self.wf_circuit.blocklist_elem,
+        )?;
+
+        // Witness the hidden inputs
+        let sig_var =
+            SchnorrSignatureVar::new_witness(ns!(cs, "sig var"), &self.issuance_circuit.sig)?;
+        let opening_var = BlsFrV::new_witness(ns!(cs, "opening var"), || {
+            Ok(self.issuance_circuit.opening.0)
+        })?;
+        let pubkey_selector_var = self
+            .issuance_circuit
+            .pubkey_selector
+            .iter()
+            .map(|b| Boolean::new_witness(ns!(cs, "pubkey var"), || Ok(b)))
+            .collect::<Result<Vec<Boolean<BlsFr>>, _>>()?;
+
+        // Make a Poseidon hasher
+        let hash_ctx = PoseidonCtxVar::new(ns!(cs, "hash ctx"))?;
+
+        // Now run the subcircuits on the variables
+        TagWellFormednessCircuit::generate_constraints_preallocated(
+            priv_id_var.clone(),
+            blocklist_elem_var,
+            hash_ctx.clone(),
+        )?;
+        OneofNSchnorrVerifyCircuit::generate_constraints_preallocated(
+            priv_id_var,
+            pubkey_vars,
+            sig_var,
+            opening_var,
+            pubkey_selector_var,
+            hash_ctx,
+        )
     }
 }
 
