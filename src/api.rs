@@ -27,6 +27,10 @@ use hiciap::{
     HiciapProof, HiciapProvingKey, HiciapVerifKey, HiddenInputOpening,
 };
 
+// Domain separators for our proofs
+const AGG_CHUNK_DOMAIN_STR: &[u8] = b"snarkblock-aggproof-chunk";
+const AGG_IWF_DOMAIN_STR: &[u8] = b"snarkblock-aggproof-iwf";
+
 /// A Groth16 proving key specifically for issuance-and-tag well-formedness proofs
 #[derive(CanonicalSerialize, CanonicalDeserialize, Clone)]
 pub struct IssuanceAndWfProvingKey(ark_groth16::ProvingKey<Bls12_381>);
@@ -360,7 +364,7 @@ impl AggIwfProver {
         // HiCIAP requires a minimum of 14 proofs to function
         let mut proof_vec = vec![proof.0.clone(); 14];
 
-        let mut proof_transcript = Transcript::new(b"snarkblock-aggproof-iat");
+        let mut proof_transcript = Transcript::new(AGG_IWF_DOMAIN_STR);
 
         // Do a no-CSM proof for the issuance-and-tag
         let (hiciap_proof, priv_id_opening) = hiciap_prove(
@@ -383,7 +387,7 @@ impl AggIwfProver {
 impl AggIwfVerifier {
     // TODO: Do the input preprocessing beforehand
     pub fn verify(&self, new_elem: &BlocklistElem, proof: &AggIwfProof) -> Result<bool, Error> {
-        let mut verif_transcript = Transcript::new(b"snarkblock-aggproof-chunk");
+        let mut verif_transcript = Transcript::new(AGG_IWF_DOMAIN_STR);
 
         // The public input to a single issuance-and-tag-well-formedness circuit is the pubkeys
         // followed by the blocklisted element
@@ -490,7 +494,7 @@ impl AggChunkProver {
         proofs: &mut [ChunkProof],
         prepared_chunks: &mut Vec<PreparedChunk>,
     ) -> Result<AggChunkProof, Error> {
-        let mut proof_transcript = Transcript::new(b"snarkblock-aggproof-chunk");
+        let mut proof_transcript = Transcript::new(AGG_CHUNK_DOMAIN_STR);
         let (hiciap_proof, priv_id_opening) = hiciap_prove(
             rng,
             &mut proof_transcript,
@@ -510,7 +514,7 @@ impl AggChunkProver {
 
 impl AggChunkVerifier {
     pub fn verify(&self, com: BlocklistCom, proof: &AggChunkProof) -> Result<bool, Error> {
-        let mut verif_transcript = Transcript::new(b"snarkblock-aggproof-chunk");
+        let mut verif_transcript = Transcript::new(AGG_CHUNK_DOMAIN_STR);
         let mut verif_ctx = hiciap::VerifierCtx {
             hiciap_vk: &self.agg_verif_key.0,
             circuit_vk: &self.circuit_verif_key.vk,
