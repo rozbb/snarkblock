@@ -21,7 +21,7 @@ use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisE
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Read, SerializationError, Write};
 use ark_std::rand::{CryptoRng, RngCore};
 use hiciap::{
-    hiciap_prove, hiciap_verify,
+    hiciap_prove, hiciap_setup, hiciap_verify,
     linkage::{hiciap_link, LinkageProof},
     merlin::Transcript,
     HiciapProof, HiciapProvingKey, HiciapVerifKey, HiddenInputOpening,
@@ -44,7 +44,7 @@ pub fn issuance_and_wf_setup<R: CryptoRng + RngCore>(
     num_pubkeys: usize,
 ) -> (IssuanceAndWfProvingKey, IssuanceAndWfVerifKey) {
     let circuit = IssuanceAndWfWfCircuit::new_placeholder(num_pubkeys);
-    let (pk, vk) = Groth16::setup(circuit, rng).expect("couldn't setup chunk circuit");
+    let (pk, vk) = Groth16::setup(circuit, rng).expect("couldn't setup IWF circuit");
 
     (IssuanceAndWfProvingKey(pk), IssuanceAndWfVerifKey(vk))
 }
@@ -123,11 +123,18 @@ impl ChunkProver {
     pub fn prove<R: CryptoRng + RngCore>(
         &self,
         rng: &mut R,
-        elems: &[BlocklistElem],
+        chunk: &Chunk,
     ) -> Result<ChunkProof, SynthesisError> {
-        // Pad the chunk to the appropriate length
-        let mut chunk = Chunk(elems.to_vec());
-        chunk.pad_to(self.proving_key.chunk_size);
+        let desired_chunk_size = self.proving_key.chunk_size;
+
+        // Pad the chunk to the appropriate length if it's not already there
+        let chunk = if chunk.0.len() == desired_chunk_size {
+            chunk.clone()
+        } else {
+            let mut copy = chunk.clone();
+            copy.pad_to(desired_chunk_size);
+            copy
+        };
 
         // Construct the circuit and prove it
         let circuit = ChunkNonMembershipCircuit {
@@ -154,10 +161,17 @@ impl ChunkPreparer {
     ///
     /// # Panics
     /// Iff `chunk.len() > chunk_size`
-    pub fn prepare_chunk(&self, elems: &[BlocklistElem]) -> Result<PreparedChunk, Error> {
-        // Pad the chunk to the appropriate length
-        let mut chunk = Chunk(elems.to_vec());
-        chunk.pad_to(self.verif_key.chunk_size);
+    pub fn prepare(&self, chunk: &Chunk) -> Result<PreparedChunk, Error> {
+        let desired_chunk_size = self.verif_key.chunk_size;
+
+        // Pad the chunk to the appropriate length if it's not already there
+        let chunk = if chunk.0.len() == desired_chunk_size {
+            chunk.clone()
+        } else {
+            let mut copy = chunk.clone();
+            copy.pad_to(desired_chunk_size);
+            copy
+        };
 
         // Now serialize the chunk into a flat array of field elements
         let serialized_chunk: Vec<BlsFr> = chunk
@@ -415,9 +429,22 @@ impl BlocklistCom {
 }
 
 /// A HiCIAP proving key for aggregating chunk non-membership proofs
+#[derive(Clone)]
 pub struct AggChunkProvingKey(HiciapProvingKey<Bls12_381>);
 /// A HiCIAP verifying key for aggregated chunk non-membership proofs
+#[derive(Clone)]
 pub struct AggChunkVerifKey(HiciapVerifKey<Bls12_381>);
+
+/// Returns a blocklist-length-specific proving key and verifying key for aggregated chunk proofs
+pub fn agg_chunk_setup<R: CryptoRng + RngCore>(
+    rng: &mut R,
+    num_chunks: usize,
+) -> (AggChunkProvingKey, AggChunkVerifKey) {
+    let pk = hiciap_setup(rng, num_chunks).expect("couldn't generate agg chunk CRS");
+    let vk: hiciap::HiciapVerifKey<Bls12_381> = From::from(&pk);
+
+    (AggChunkProvingKey(pk), AggChunkVerifKey(vk))
+}
 
 /// An aggregate of chunk non-membership proofs
 pub struct AggChunkProof {
@@ -511,5 +538,75 @@ pub fn snarkblock_link<R: CryptoRng + RngCore>(
         chunk_proofs,
         issuance_and_tag_proof,
         linkage_proof,
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::test_util::test_rng;
+
+    #[test]
+    fn test_agg_blocklist() {
+        let mut rng = test_rng();
+        let chunk_size = 16;
+        let num_chunks = 14;
+
+        // Generate everything randomly
+        let priv_id = PrivateId::gen(&mut rng);
+        let blocklist: Vec<Chunk> =
+            iter::repeat_with(|| Chunk::gen_with_size(&mut rng, chunk_size))
+                .take(num_chunks)
+                .collect();
+
+        // Do all the setups
+        let (chunk_pk, chunk_vk) = chunk_setup(&mut rng, chunk_size);
+        let (agg_chunk_pk, agg_chunk_vk) = agg_chunk_setup(&mut rng, num_chunks);
+
+        let chunk_prover = ChunkProver {
+            priv_id,
+            proving_key: chunk_pk,
+        };
+        let chunk_preparer = ChunkPreparer {
+            verif_key: chunk_vk.clone(),
+        };
+        let agg_chunk_prover = AggChunkProver {
+            priv_id,
+            circuit_verif_key: chunk_vk.clone(),
+            agg_proving_key: agg_chunk_pk.clone(),
+        };
+        let agg_chunk_verifier = AggChunkVerifier {
+            circuit_verif_key: chunk_vk,
+            agg_verif_key: agg_chunk_vk,
+        };
+
+        // Prepare all the chunks, then compress them for verification
+        let mut prepared_chunks: Vec<PreparedChunk> = blocklist
+            .iter()
+            .map(|chunk| {
+                chunk_preparer
+                    .prepare(chunk)
+                    .expect("couldn't prepare chunk")
+            })
+            .collect();
+        let blocklist_com = BlocklistCom::from_prepared_chunks(&mut prepared_chunks, &agg_chunk_pk);
+
+        // Start proving things. Start with proving each individual chunk
+        let mut chunk_proofs: Vec<ChunkProof> = blocklist
+            .iter()
+            .map(|chunk| {
+                chunk_prover
+                    .prove(&mut rng, chunk)
+                    .expect("couldn't prove chunk")
+            })
+            .collect();
+        // Now prove the aggregate
+        let agg_chunk_proof = agg_chunk_prover
+            .prove(&mut rng, &mut chunk_proofs, &mut prepared_chunks)
+            .expect("couldn't prove HiCIAP over chunks");
+
+        assert!(agg_chunk_verifier
+            .verify(blocklist_com, &agg_chunk_proof)
+            .expect("couldn't verify agg chunk proof"));
     }
 }
