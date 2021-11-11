@@ -312,14 +312,24 @@ pub struct AggIwfProvingKey(HiciapProvingKey<Bls12_381>);
 /// A HiCIAP verifying key for aggregated issuance-and-tag-well-formedness proofs
 pub struct AggIwfVerifKey(HiciapVerifKey<Bls12_381>);
 
+/// Returns a proving key and verifying key for aggregating issuance-and-tag-well-formedness proofs
+pub fn agg_iwf_setup<R: CryptoRng + RngCore>(rng: &mut R) -> (AggIwfProvingKey, AggIwfVerifKey) {
+    // This is fixed because there's only ever 1 IWF proof anyway. We just repeat it 13 times.
+    let num_proofs = 14;
+    let pk = hiciap_setup(rng, num_proofs).expect("couldn't generate agg chunk CRS");
+    let vk: hiciap::HiciapVerifKey<Bls12_381> = From::from(&pk);
+
+    (AggIwfProvingKey(pk), AggIwfVerifKey(vk))
+}
+
 /// A struct for turning `IssuanceAndWfProof`s into HiCIAP proofs of the same statement
 pub struct AggIwfProver {
     /// The user's private ID
     pub priv_id: PrivateId,
     /// Verification key for verifying the issuance-and-tag-well-formedness circuit
-    pub circuit_verif_key: ChunkVerifKey,
+    pub circuit_verif_key: IssuanceAndWfVerifKey,
     /// Key for proving aggregates
-    pub agg_proving_key: AggChunkProvingKey,
+    pub agg_proving_key: AggIwfProvingKey,
 }
 
 /// A struct for verifying `AggIwfProof`s
@@ -357,7 +367,7 @@ impl AggIwfProver {
             rng,
             &mut proof_transcript,
             &self.agg_proving_key.0,
-            &self.circuit_verif_key.vk,
+            &self.circuit_verif_key.0,
             proof_vec.as_mut_slice(),
             None,
             self.priv_id.0,
@@ -372,7 +382,7 @@ impl AggIwfProver {
 
 impl AggIwfVerifier {
     // TODO: Do the input preprocessing beforehand
-    pub fn verify(&self, new_elem: &BlocklistElem, proof: &AggChunkProof) -> Result<bool, Error> {
+    pub fn verify(&self, new_elem: &BlocklistElem, proof: &AggIwfProof) -> Result<bool, Error> {
         let mut verif_transcript = Transcript::new(b"snarkblock-aggproof-chunk");
 
         // The public input to a single issuance-and-tag-well-formedness circuit is the pubkeys
@@ -544,8 +554,73 @@ pub fn snarkblock_link<R: CryptoRng + RngCore>(
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::test_util::test_rng;
+    use crate::{issuance::SchnorrPrivkey, test_util::test_rng};
 
+    use ark_std::rand::Rng;
+
+    /// Tests the correctness of the aggregate issuance-and-tag-well-formedness prover
+    #[test]
+    fn test_agg_iwf() {
+        let mut rng = test_rng();
+        let num_pubkeys = 16;
+
+        // Generate a fresh private ID and make a valid blocklist element
+        let priv_id = PrivateId::gen(&mut rng);
+        let blocklist_elem = priv_id.gen_blocklist_elem(&mut rng);
+
+        // Generate a signing keypair and sign a commitment to the private ID
+        let privkey = SchnorrPrivkey::gen(&mut rng);
+        let signers_pubkey = From::from(&privkey);
+        let (req, priv_id_opening) = priv_id.request_issuance(&mut rng);
+        let sig = privkey.issue(&mut rng, &req);
+
+        // Generate some other random pubkeys that did not sign the commitment
+        let mut pubkeys: Vec<SchnorrPubkey> = (0..num_pubkeys - 1)
+            .map(|_| SchnorrPubkey::gen(&mut rng))
+            .collect();
+
+        // Add the signer's pubkey into the list of random pubkeys. Place it at a random index.
+        let signers_pubkey_idx = rng.gen_range(0..pubkeys.len() + 1) as u16;
+        pubkeys.insert(signers_pubkey_idx as usize, signers_pubkey);
+
+        // Do all the setups
+        let (iwf_pk, iwf_vk) = issuance_and_wf_setup(&mut rng, num_pubkeys);
+        let (agg_iwf_pk, agg_iwf_vk) = agg_iwf_setup(&mut rng);
+
+        let iwf_prover = IssuanceAndWfProver {
+            priv_id,
+            pubkeys: pubkeys.clone(),
+            signers_pubkey_idx,
+            priv_id_opening,
+            sig,
+            proving_key: iwf_pk,
+        };
+        let agg_iwf_prover = AggIwfProver {
+            priv_id,
+            circuit_verif_key: iwf_vk.clone(),
+            agg_proving_key: agg_iwf_pk,
+        };
+        let agg_iwf_verifier = AggIwfVerifier {
+            pubkeys,
+            circuit_verif_key: iwf_vk,
+            agg_verif_key: agg_iwf_vk,
+        };
+
+        // Do the proof
+        let base_proof = iwf_prover
+            .prove(&mut rng, blocklist_elem)
+            .expect("couldn't prove base IWF");
+        let agg_proof = agg_iwf_prover
+            .prove(&mut rng, &base_proof)
+            .expect("couldn't prove IWF HiCIAP");
+
+        // Ensure that the aggregate verifies
+        assert!(agg_iwf_verifier
+            .verify(&blocklist_elem, &agg_proof)
+            .expect("couldn't verify agg IWF proof"));
+    }
+
+    /// Tests the correctness of the aggregate chunk prover
     #[test]
     fn test_agg_blocklist() {
         let mut rng = test_rng();
