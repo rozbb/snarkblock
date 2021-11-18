@@ -1,12 +1,15 @@
-pub use ark_std::rand;
-
 pub mod api;
-mod blocklist;
-mod issuance;
+pub mod blocklist;
+pub mod issuance;
 mod util;
 
-#[cfg(test)]
-mod test_util;
+pub use crate::api::*;
+pub use ark_std::rand;
+pub use blocklist::*;
+pub use issuance::*;
+
+#[cfg(any(test, feature = "benchmarking"))]
+pub mod test_util;
 
 use crate::util::{BlsFr, BlsFrV};
 

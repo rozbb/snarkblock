@@ -1,4 +1,5 @@
 use crate::{
+    blocklist::{BlocklistElem, Chunk, SessionNonce, SessionTag},
     issuance::{
         IssuanceOpening, OneofNSchnorrVerifyCircuit, SchnorrPrivkey, SchnorrPubkey,
         SchnorrSignature,
@@ -7,10 +8,10 @@ use crate::{
     PrivateId,
 };
 
-use ark_ff::ToConstraintField;
+use ark_ff::{ToConstraintField, UniformRand};
 use ark_std::rand::{rngs::StdRng, CryptoRng, Rng, RngCore, SeedableRng};
 
-pub(crate) fn test_rng() -> StdRng {
+pub fn test_rng() -> StdRng {
     StdRng::seed_from_u64(1337)
 }
 
@@ -40,7 +41,7 @@ pub(crate) fn rand_schnorr_verify_circuit<R: CryptoRng + RngCore>(
 
 /// Makes a random list of public keys, uses one of them to sign the private ID, and returns the
 /// list, the signature, the index of the signing pubkey, and the private ID commitment opening
-pub(crate) fn rand_issuance<R: CryptoRng + RngCore>(
+pub fn rand_issuance<R: CryptoRng + RngCore>(
     rng: &mut R,
     priv_id: PrivateId,
     num_pubkeys: usize,
@@ -61,4 +62,31 @@ pub(crate) fn rand_issuance<R: CryptoRng + RngCore>(
     pubkeys.insert(signers_pubkey_idx as usize, signers_pubkey);
 
     (pubkeys, signers_pubkey_idx, sig, priv_id_opening)
+}
+
+impl Chunk {
+    pub fn gen_with_size<R: RngCore + CryptoRng>(rng: &mut R, size: usize) -> Chunk {
+        let elems = core::iter::repeat_with(|| BlocklistElem::gen(rng))
+            .take(size)
+            .collect();
+        Chunk(elems)
+    }
+}
+
+impl BlocklistElem {
+    /// Returns a randomly generated blocklist elements. This is an invalid blocklist element with
+    /// overwhelming probability, so it shouldn't interfere with proofs of nonmembership.
+    pub fn gen<R: RngCore + CryptoRng>(rng: &mut R) -> BlocklistElem {
+        BlocklistElem {
+            sess_nonce: SessionNonce::gen(rng),
+            sess_tag: SessionTag(BlsFr::rand(rng)),
+        }
+    }
+}
+
+impl SchnorrPubkey {
+    /// Function for generating random pubkeys. Not useful outside of testing
+    pub fn gen<R: Rng + ?Sized + CryptoRng>(rng: &mut R) -> SchnorrPubkey {
+        From::from(&SchnorrPrivkey::gen(rng))
+    }
 }

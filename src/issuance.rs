@@ -65,14 +65,6 @@ impl SchnorrSignatureVar {
     }
 }
 
-impl SchnorrPubkey {
-    /// Function for generating random pubkeys. Not useful outside of testing
-    #[cfg(test)]
-    pub(crate) fn gen<R: Rng + ?Sized + CryptoRng>(rng: &mut R) -> SchnorrPubkey {
-        From::from(&SchnorrPrivkey::gen(rng))
-    }
-}
-
 impl<'a> From<&'a SchnorrPrivkey> for SchnorrPubkey {
     fn from(privkey: &'a SchnorrPrivkey) -> SchnorrPubkey {
         // g^privkey is the pubkey

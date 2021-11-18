@@ -599,13 +599,12 @@ impl SnarkblockProof {
 impl SnarkblockVerifier {
     pub fn verify(
         &self,
-        blocklist_com: BlocklistCom,
+        blocklist_coms: Vec<BlocklistCom>,
         new_elem: &BlocklistElem,
         mut sb_proof: SnarkblockProof,
     ) -> Result<bool, Error> {
         // First verify linkage
         if !hiciap_verify_linkage(&sb_proof.agg_proofs, &sb_proof.linkage_proof) {
-            eprintln!("LINKAGE FAILED");
             return Ok(false);
         }
 
@@ -619,7 +618,6 @@ impl SnarkblockVerifier {
             priv_id_opening: None,
         };
         if !self.agg_iwf_verifier.verify(new_elem, &iwf_proof)? {
-            eprintln!("IWF verification failed");
             return Ok(false);
         }
 
@@ -628,7 +626,8 @@ impl SnarkblockVerifier {
         sb_proof
             .agg_proofs
             .into_iter()
-            .fold(Ok(true), |acc, chunk_hiciap_proof| {
+            .zip(blocklist_coms.into_iter())
+            .fold(Ok(true), |acc, (chunk_hiciap_proof, blocklist_com)| {
                 // Construct the chunk proof and accumulate the result
                 let chunk_proof = AggChunkProof {
                     hiciap_proof: chunk_hiciap_proof,
@@ -636,7 +635,7 @@ impl SnarkblockVerifier {
                 };
                 acc.and_then(|a| {
                     self.agg_chunk_verifier
-                        .verify(blocklist_com.clone(), &chunk_proof)
+                        .verify(blocklist_com, &chunk_proof)
                         .map(|res| res && a)
                 })
             })
@@ -864,7 +863,7 @@ mod test {
         // Put it all together and verify it
         let snarkblock_proof = SnarkblockProof::new(&mut rng, agg_iwf_proof, vec![agg_chunk_proof]);
         assert!(snarkblock_verifier
-            .verify(blocklist_com, &blocklist_elem, snarkblock_proof)
+            .verify(vec![blocklist_com], &blocklist_elem, snarkblock_proof)
             .unwrap());
     }
 }

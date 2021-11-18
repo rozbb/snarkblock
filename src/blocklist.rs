@@ -49,18 +49,6 @@ pub struct BlocklistElem {
     pub(crate) sess_tag: SessionTag,
 }
 
-impl BlocklistElem {
-    /// Returns a randomly generated blocklist elements. This is an invalid blocklist element with
-    /// overwhelming probability, so it shouldn't interfere with proofs of nonmembership.
-    #[cfg(test)]
-    fn gen<R: RngCore + CryptoRng>(rng: &mut R) -> BlocklistElem {
-        BlocklistElem {
-            sess_nonce: SessionNonce::gen(rng),
-            sess_tag: SessionTag(BlsFr::rand(rng)),
-        }
-    }
-}
-
 impl Default for BlocklistElem {
     /// Returns a blocklist element of all 0s. This is an invalid blocklist element with
     /// overwhelming probability, so it shouldn't interfere with proofs of nonmembership.
@@ -114,8 +102,7 @@ impl PrivateId {
     }
 
     /// Creates a valid, random blocklist element under this ID
-    #[cfg(test)]
-    pub(crate) fn gen_blocklist_elem<R: RngCore + CryptoRng>(&self, rng: &mut R) -> BlocklistElem {
+    pub fn gen_blocklist_elem<R: RngCore + CryptoRng>(&self, rng: &mut R) -> BlocklistElem {
         let hash_ctx = PoseidonCtx::new();
 
         // Make a random nonce and compute the corresponding tag
@@ -179,14 +166,6 @@ impl Chunk {
             .expect("chunk slice too big");
         self.0
             .extend(core::iter::repeat(BlocklistElem::default()).take(padding_size));
-    }
-
-    #[cfg(test)]
-    pub(crate) fn gen_with_size<R: RngCore + CryptoRng>(rng: &mut R, size: usize) -> Chunk {
-        let elems = core::iter::repeat_with(|| BlocklistElem::gen(rng))
-            .take(size)
-            .collect();
-        Chunk(elems)
     }
 }
 
