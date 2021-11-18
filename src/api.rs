@@ -558,9 +558,7 @@ pub fn snarkblock_link<R: CryptoRng + RngCore>(
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{issuance::SchnorrPrivkey, test_util::test_rng};
-
-    use ark_std::rand::Rng;
+    use crate::test_util::{rand_issuance, test_rng};
 
     /// Tests the correctness of the aggregate issuance-and-tag-well-formedness prover
     #[test]
@@ -568,24 +566,11 @@ mod test {
         let mut rng = test_rng();
         let num_pubkeys = 16;
 
-        // Generate a fresh private ID and make a valid blocklist element
+        // Generate a fresh private ID, make a valid blocklist element, and do the issuance
         let priv_id = PrivateId::gen(&mut rng);
         let blocklist_elem = priv_id.gen_blocklist_elem(&mut rng);
-
-        // Generate a signing keypair and sign a commitment to the private ID
-        let privkey = SchnorrPrivkey::gen(&mut rng);
-        let signers_pubkey = From::from(&privkey);
-        let (req, priv_id_opening) = priv_id.request_issuance(&mut rng);
-        let sig = privkey.issue(&mut rng, &req);
-
-        // Generate some other random pubkeys that did not sign the commitment
-        let mut pubkeys: Vec<SchnorrPubkey> = (0..num_pubkeys - 1)
-            .map(|_| SchnorrPubkey::gen(&mut rng))
-            .collect();
-
-        // Add the signer's pubkey into the list of random pubkeys. Place it at a random index.
-        let signers_pubkey_idx = rng.gen_range(0..pubkeys.len() + 1) as u16;
-        pubkeys.insert(signers_pubkey_idx as usize, signers_pubkey);
+        let (pubkeys, signers_pubkey_idx, sig, priv_id_opening) =
+            rand_issuance(&mut rng, priv_id, num_pubkeys);
 
         // Do all the setups
         let (iwf_pk, iwf_vk) = issuance_and_wf_setup(&mut rng, num_pubkeys);
