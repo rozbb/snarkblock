@@ -22,7 +22,7 @@ use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Read, Serializatio
 use ark_std::rand::{CryptoRng, RngCore};
 use hiciap::{
     hiciap_prove, hiciap_setup, hiciap_verify,
-    linkage::{hiciap_link, LinkageProof},
+    linkage::{hiciap_link, hiciap_verify_linkage, LinkageProof},
     merlin::Transcript,
     HiciapProof, HiciapProvingKey, HiciapVerifKey, HiddenInputOpening,
 };
@@ -350,8 +350,8 @@ pub struct AggIwfVerifier {
 pub struct AggIwfProof {
     /// The proof of the aggregate of the IAT circuit proofs
     hiciap_proof: HiciapProof<Bls12_381>,
-    /// The opening of the commitment to priv_id
-    priv_id_opening: HiddenInputOpening<Bls12_381>,
+    /// The opening of the commitment to priv_id. When we are the prover, this is `Some`
+    priv_id_opening: Option<HiddenInputOpening<Bls12_381>>,
 }
 
 impl AggIwfProver {
@@ -379,7 +379,7 @@ impl AggIwfProver {
 
         Ok(AggIwfProof {
             hiciap_proof,
-            priv_id_opening,
+            priv_id_opening: Some(priv_id_opening),
         })
     }
 }
@@ -417,6 +417,19 @@ impl AggIwfVerifier {
 
 /// A commitment to the entire blocklist. This must be updated every time the blocklist is updated
 pub struct BlocklistCom(hiciap::VerifierInputs<'static, Bls12_381>);
+
+impl Clone for BlocklistCom {
+    fn clone(&self) -> BlocklistCom {
+        match &self.0 {
+            hiciap::VerifierInputs::Com(a, b) => {
+                let com: hiciap::VerifierInputs<'static, Bls12_381> =
+                    hiciap::VerifierInputs::Com(a.clone(), *b);
+                BlocklistCom(com)
+            }
+            _ => unreachable!(),
+        }
+    }
+}
 
 impl BlocklistCom {
     pub fn from_prepared_chunks(
@@ -464,8 +477,8 @@ pub fn agg_chunk_setup<R: CryptoRng + RngCore>(
 pub struct AggChunkProof {
     /// The proof of the aggregate of the chunks
     hiciap_proof: HiciapProof<Bls12_381>,
-    /// The opening of the commitment to priv_id
-    priv_id_opening: HiddenInputOpening<Bls12_381>,
+    /// The opening of the commitment to priv_id. When we are the prover, this is `Some`
+    priv_id_opening: Option<HiddenInputOpening<Bls12_381>>,
 }
 
 /// A struct for aggregating `ChunkProof`s into a single `AggChunkProof`
@@ -507,7 +520,7 @@ impl AggChunkProver {
 
         Ok(AggChunkProof {
             hiciap_proof,
-            priv_id_opening,
+            priv_id_opening: Some(priv_id_opening),
         })
     }
 }
@@ -525,33 +538,107 @@ impl AggChunkVerifier {
     }
 }
 
+/// A proof of the SnarkBlock relation
 pub struct SnarkblockProof {
-    chunk_proofs: Vec<AggChunkProof>,
-    issuance_and_tag_proof: AggIwfProof,
+    agg_proofs: Vec<HiciapProof<Bls12_381>>,
     linkage_proof: LinkageProof<Bls12_381>,
 }
 
-pub fn snarkblock_link<R: CryptoRng + RngCore>(
-    rng: &mut R,
-    issuance_and_tag_proof: AggIwfProof,
-    chunk_proofs: Vec<AggChunkProof>,
-) -> SnarkblockProof {
-    let proof_data: Vec<(&HiciapProof<Bls12_381>, &HiddenInputOpening<Bls12_381>)> = iter::once((
-        &issuance_and_tag_proof.hiciap_proof,
-        &issuance_and_tag_proof.priv_id_opening,
-    ))
-    .chain(
-        chunk_proofs
-            .iter()
-            .map(|cp| (&cp.hiciap_proof, &cp.priv_id_opening)),
-    )
-    .collect();
-    let linkage_proof = hiciap_link(rng, &proof_data);
+pub struct SnarkblockVerifier {
+    pub agg_chunk_verifier: AggChunkVerifier,
+    pub agg_iwf_verifier: AggIwfVerifier,
+}
 
-    SnarkblockProof {
-        chunk_proofs,
-        issuance_and_tag_proof,
-        linkage_proof,
+impl SnarkblockProof {
+    /// Constructs a single `SnarkblockProof` from the given IWF proof and chunk proofs
+    pub fn new<R: CryptoRng + RngCore>(
+        rng: &mut R,
+        iwf_proof: AggIwfProof,
+        chunk_proofs: Vec<AggChunkProof>,
+    ) -> SnarkblockProof {
+        // Collect the proofs and their hidden wire openings. Ordering is chunk proofs then IWF
+        // proof
+        let proof_data: Vec<(&HiciapProof<Bls12_381>, &HiddenInputOpening<Bls12_381>)> =
+            chunk_proofs
+                .iter()
+                .map(|cp| {
+                    (
+                        &cp.hiciap_proof,
+                        cp.priv_id_opening
+                            .as_ref()
+                            .expect("chunk proof has no opening"),
+                    )
+                })
+                .chain(iter::once((
+                    &iwf_proof.hiciap_proof,
+                    iwf_proof
+                        .priv_id_opening
+                        .as_ref()
+                        .expect("IWF proof has no opening"),
+                )))
+                .collect();
+
+        // Prove the hidden wires are the same across all aggregate proofs
+        let linkage_proof = hiciap_link(rng, &proof_data);
+
+        // Collect just the proofs. First chunk proofs, then IWF proof
+        let agg_proofs: Vec<HiciapProof<Bls12_381>> = chunk_proofs
+            .into_iter()
+            .map(|cp| cp.hiciap_proof)
+            .chain(iter::once(iwf_proof.hiciap_proof))
+            .collect();
+
+        SnarkblockProof {
+            agg_proofs,
+            linkage_proof,
+        }
+    }
+}
+
+impl SnarkblockVerifier {
+    pub fn verify(
+        &self,
+        blocklist_com: BlocklistCom,
+        new_elem: &BlocklistElem,
+        mut sb_proof: SnarkblockProof,
+    ) -> Result<bool, Error> {
+        // First verify linkage
+        if !hiciap_verify_linkage(&sb_proof.agg_proofs, &sb_proof.linkage_proof) {
+            eprintln!("LINKAGE FAILED");
+            return Ok(false);
+        }
+
+        // Now check the agg IWF proof. It's at the end of the vector
+        let iwf_hiciap_proof = sb_proof
+            .agg_proofs
+            .pop()
+            .expect("snarkblock proof is empty");
+        let iwf_proof = AggIwfProof {
+            hiciap_proof: iwf_hiciap_proof,
+            priv_id_opening: None,
+        };
+        if !self.agg_iwf_verifier.verify(new_elem, &iwf_proof)? {
+            eprintln!("IWF verification failed");
+            return Ok(false);
+        }
+
+        // Now run through the chunk proofs. The IWF proof was popped off, so the chunk proofs are
+        // all that remain
+        sb_proof
+            .agg_proofs
+            .into_iter()
+            .fold(Ok(true), |acc, chunk_hiciap_proof| {
+                // Construct the chunk proof and accumulate the result
+                let chunk_proof = AggChunkProof {
+                    hiciap_proof: chunk_hiciap_proof,
+                    priv_id_opening: None,
+                };
+                acc.and_then(|a| {
+                    self.agg_chunk_verifier
+                        .verify(blocklist_com.clone(), &chunk_proof)
+                        .map(|res| res && a)
+                })
+            })
     }
 }
 
@@ -672,5 +759,111 @@ mod test {
         assert!(agg_chunk_verifier
             .verify(blocklist_com, &agg_chunk_proof)
             .expect("couldn't verify agg chunk proof"));
+    }
+
+    /// Tests the correctness of the aggregate chunk prover
+    #[test]
+    fn test_snarkblock() {
+        let mut rng = test_rng();
+        let chunk_size = 16;
+        let num_chunks = 14;
+        let num_pubkeys = 16;
+
+        // Generate a fresh private ID, make a valid blocklist element, and do the issuance
+        let priv_id = PrivateId::gen(&mut rng);
+        let blocklist_elem = priv_id.gen_blocklist_elem(&mut rng);
+        let (pubkeys, signers_pubkey_idx, sig, priv_id_opening) =
+            rand_issuance(&mut rng, priv_id, num_pubkeys);
+
+        // Generate a fresh blocklist
+        let blocklist: Vec<Chunk> =
+            iter::repeat_with(|| Chunk::gen_with_size(&mut rng, chunk_size))
+                .take(num_chunks)
+                .collect();
+
+        // Do all the setups
+        let (iwf_pk, iwf_vk) = issuance_and_wf_setup(&mut rng, num_pubkeys);
+        let (chunk_pk, chunk_vk) = chunk_setup(&mut rng, chunk_size);
+        let (agg_iwf_pk, agg_iwf_vk) = agg_iwf_setup(&mut rng);
+        let (agg_chunk_pk, agg_chunk_vk) = agg_chunk_setup(&mut rng, num_chunks);
+
+        let iwf_prover = IssuanceAndWfProver {
+            priv_id,
+            pubkeys: pubkeys.clone(),
+            signers_pubkey_idx,
+            priv_id_opening,
+            sig,
+            proving_key: iwf_pk,
+        };
+        let agg_iwf_prover = AggIwfProver {
+            priv_id,
+            circuit_verif_key: iwf_vk.clone(),
+            agg_proving_key: agg_iwf_pk,
+        };
+        let agg_iwf_verifier = AggIwfVerifier {
+            pubkeys,
+            circuit_verif_key: iwf_vk,
+            agg_verif_key: agg_iwf_vk,
+        };
+        let chunk_prover = ChunkProver {
+            priv_id,
+            proving_key: chunk_pk,
+        };
+        let chunk_preparer = ChunkPreparer {
+            verif_key: chunk_vk.clone(),
+        };
+        let agg_chunk_prover = AggChunkProver {
+            priv_id,
+            circuit_verif_key: chunk_vk.clone(),
+            agg_proving_key: agg_chunk_pk.clone(),
+        };
+        let agg_chunk_verifier = AggChunkVerifier {
+            circuit_verif_key: chunk_vk,
+            agg_verif_key: agg_chunk_vk,
+        };
+        let snarkblock_verifier = SnarkblockVerifier {
+            agg_chunk_verifier,
+            agg_iwf_verifier,
+        };
+
+        // Prepare all the chunks, then compress them for verification
+        let mut prepared_chunks: Vec<PreparedChunk> = blocklist
+            .iter()
+            .map(|chunk| {
+                chunk_preparer
+                    .prepare(chunk)
+                    .expect("couldn't prepare chunk")
+            })
+            .collect();
+        let blocklist_com = BlocklistCom::from_prepared_chunks(&mut prepared_chunks, &agg_chunk_pk);
+
+        // Start proving things. Start with the IWF proof
+        let base_iwf_proof = iwf_prover
+            .prove(&mut rng, blocklist_elem)
+            .expect("couldn't prove base IWF");
+        let agg_iwf_proof = agg_iwf_prover
+            .prove(&mut rng, &base_iwf_proof)
+            .expect("couldn't prove IWF HiCIAP");
+
+        // Now prove the individual chunks
+        let mut chunk_proofs: Vec<ChunkProof> = blocklist
+            .iter()
+            .map(|chunk| {
+                chunk_prover
+                    .prove(&mut rng, chunk)
+                    .expect("couldn't prove chunk")
+            })
+            .collect();
+
+        // Now prove the chunk aggregate
+        let agg_chunk_proof = agg_chunk_prover
+            .prove(&mut rng, &mut chunk_proofs, &mut prepared_chunks)
+            .expect("couldn't prove HiCIAP over chunks");
+
+        // Put it all together and verify it
+        let snarkblock_proof = SnarkblockProof::new(&mut rng, agg_iwf_proof, vec![agg_chunk_proof]);
+        assert!(snarkblock_verifier
+            .verify(blocklist_com, &blocklist_elem, snarkblock_proof)
+            .unwrap());
     }
 }
