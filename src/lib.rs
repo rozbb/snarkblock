@@ -1,3 +1,5 @@
+pub use ark_std::rand;
+
 pub mod api;
 mod blocklist;
 mod issuance;

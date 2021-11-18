@@ -539,6 +539,7 @@ impl AggChunkVerifier {
 }
 
 /// A proof of the SnarkBlock relation
+#[derive(CanonicalSerialize, CanonicalDeserialize)]
 pub struct SnarkblockProof {
     agg_proofs: Vec<HiciapProof<Bls12_381>>,
     linkage_proof: LinkageProof<Bls12_381>,
