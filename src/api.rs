@@ -347,6 +347,7 @@ pub struct AggIwfVerifier {
 }
 
 /// A HiCIAP proof of issuance-and-tag-well-formedness
+#[derive(Clone)]
 pub struct AggIwfProof {
     /// The proof of the aggregate of the IAT circuit proofs
     hiciap_proof: HiciapProof<Bls12_381>,
@@ -474,6 +475,7 @@ pub fn agg_chunk_setup<R: CryptoRng + RngCore>(
 }
 
 /// An aggregate of chunk non-membership proofs
+#[derive(Clone)]
 pub struct AggChunkProof {
     /// The proof of the aggregate of the chunks
     hiciap_proof: HiciapProof<Bls12_381>,
