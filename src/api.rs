@@ -546,7 +546,7 @@ pub struct SnarkblockProof {
 }
 
 pub struct SnarkblockVerifier {
-    pub agg_chunk_verifier: AggChunkVerifier,
+    pub agg_chunk_verifiers: Vec<AggChunkVerifier>,
     pub agg_iwf_verifier: AggIwfVerifier,
 }
 
@@ -626,19 +626,23 @@ impl SnarkblockVerifier {
         sb_proof
             .agg_proofs
             .into_iter()
+            .zip(&self.agg_chunk_verifiers)
             .zip(blocklist_coms.into_iter())
-            .fold(Ok(true), |acc, (chunk_hiciap_proof, blocklist_com)| {
-                // Construct the chunk proof and accumulate the result
-                let chunk_proof = AggChunkProof {
-                    hiciap_proof: chunk_hiciap_proof,
-                    priv_id_opening: None,
-                };
-                acc.and_then(|a| {
-                    self.agg_chunk_verifier
-                        .verify(blocklist_com, &chunk_proof)
-                        .map(|res| res && a)
-                })
-            })
+            .fold(
+                Ok(true),
+                |acc, ((chunk_hiciap_proof, agg_chunk_verifier), blocklist_com)| {
+                    // Construct the chunk proof and accumulate the result
+                    let chunk_proof = AggChunkProof {
+                        hiciap_proof: chunk_hiciap_proof,
+                        priv_id_opening: None,
+                    };
+                    acc.and_then(|a| {
+                        agg_chunk_verifier
+                            .verify(blocklist_com, &chunk_proof)
+                            .map(|res| res && a)
+                    })
+                },
+            )
     }
 }
 
@@ -822,7 +826,7 @@ mod test {
             agg_verif_key: agg_chunk_vk,
         };
         let snarkblock_verifier = SnarkblockVerifier {
-            agg_chunk_verifier,
+            agg_chunk_verifiers: vec![agg_chunk_verifier],
             agg_iwf_verifier,
         };
 
