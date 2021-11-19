@@ -364,7 +364,7 @@ fn output_proof_sizes(proof_sizes: &[(bool, usize, usize, usize)]) {
 
     // Write all the proof sizes
     for datum in proof_sizes {
-        writeln!(f, "{},{},{},{}", datum.0, datum.1, datum.2, datum.3)
+        writeln!(f, "{},{},{},{}", datum.0 as u8, datum.1, datum.2, datum.3)
             .expect("couldn't write line");
     }
 }
