@@ -1,3 +1,4 @@
+use snarkblock::ark_serialize::CanonicalSerialize;
 use snarkblock::test_util::{rand_issuance, test_rng};
 use snarkblock::{
     agg_chunk_setup, agg_iwf_setup, chunk_setup, issuance_and_wf_setup, AggChunkProver,
@@ -5,6 +6,8 @@ use snarkblock::{
     ChunkProver, IssuanceAndWfProver, PreparedChunk, PrivateId, SnarkblockProof,
     SnarkblockVerifier,
 };
+
+use std::{fs::File, io::Write};
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use rayon::prelude::*;
@@ -85,6 +88,16 @@ fn chunk_proof(c: &mut Criterion) {
 /// parallel, using the parameters set above.
 fn full_attestation(c: &mut Criterion) {
     let mut rng = test_rng();
+
+    // We store snarkblock proof sizes and output them at the end of the bench.
+    // The fields are
+    //     buffered: bool, indicates whether or not a buffer was used in the blocklist
+    //     num_chunks: usize, the number of chunks in the head portion of the blocklist (there is
+    //         no tail in the unbuffered case)
+    //     chunk_size: usize, the size of the head chunks of the blocklist (there is no tail in the
+    //         unbuffered case)
+    //     proof_size: The size of the resulting snarkblock proof, in bytes
+    let mut proof_sizes: Vec<(bool, usize, usize, usize)> = Vec::new();
 
     // The the buffer is always 14 chunks of size 16
     let tail_chunk_size = 16;
@@ -285,8 +298,8 @@ fn full_attestation(c: &mut Criterion) {
 
             let buffered_snarkblock_proof = SnarkblockProof::new(
                 &mut rng,
-                agg_iwf_proof,
-                vec![agg_head_chunk_proof, agg_tail_chunk_proof],
+                agg_iwf_proof.clone(),
+                vec![agg_head_chunk_proof.clone(), agg_tail_chunk_proof],
             );
 
             // Now verify
@@ -307,7 +320,52 @@ fn full_attestation(c: &mut Criterion) {
                     })
                 },
             );
+
+            // Finally, save the size of an unbuffered and buffered snarkblock proof. First
+            // compute an unbuffered one
+            let unbuffered_snarkblock_proof =
+                SnarkblockProof::new(&mut rng, agg_iwf_proof, vec![agg_head_chunk_proof]);
+
+            // Now save them
+            proof_sizes.push((
+                true, // Buffered
+                num_head_chunks,
+                head_chunk_size,
+                buffered_snarkblock_proof.serialized_size(),
+            ));
+            proof_sizes.push((
+                false, // Unbuffered
+                num_head_chunks,
+                head_chunk_size,
+                unbuffered_snarkblock_proof.serialized_size(),
+            ));
         }
+    }
+
+    output_proof_sizes(&proof_sizes);
+}
+
+/// Writes the given proof size data to snarkblock_proof_sizes.csv
+/// The fields are
+///     buffered: bool, indicates whether or not a buffer was used in the blocklist
+///     num_chunks: usize, the number of chunks in the head portion of the blocklist (there is no
+///         tail in the unbuffered case)
+///     chunk_size: usize, the size of the head chunks of the blocklist (there is no tail in the
+///         unbuffered case)
+///     proof_size: The size of the resulting snarkblock proof, in bytes
+fn output_proof_sizes(proof_sizes: &[(bool, usize, usize, usize)]) {
+    // Print to console just in case writing fails
+    println!("Writing proof sizes {:?}", proof_sizes);
+
+    // Create the file nad write the header
+    let mut f = File::create("snarkblock_proof_sizes.csv").expect("couldn't creat CSV file");
+    writeln!(f, "buffered,num_chunks,chunk_size,proof_size_in_bytes")
+        .expect("couldn't write header");
+
+    // Write all the proof sizes
+    for datum in proof_sizes {
+        writeln!(f, "{},{},{},{}", datum.0, datum.1, datum.2, datum.3)
+            .expect("couldn't write line");
     }
 }
 

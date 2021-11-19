@@ -4,6 +4,7 @@ pub mod issuance;
 mod util;
 
 pub use crate::api::*;
+pub use ark_serialize;
 pub use ark_std::rand;
 pub use blocklist::*;
 pub use issuance::*;
