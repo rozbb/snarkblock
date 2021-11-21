@@ -52,6 +52,30 @@ fn chunk_proof(c: &mut Criterion) {
         }
     }
 
+    // We need a 256-sized chunk bench for the paper
+    {
+        let chunk_size = 256;
+        let num_chunks = 1;
+        let chunk = Chunk::gen_with_size(&mut rng, chunk_size);
+
+        let (chunk_pk, _) = chunk_setup(&mut rng, chunk_size);
+        let chunk_prover = ChunkProver {
+            priv_id,
+            proving_key: chunk_pk,
+        };
+
+        c.bench_function(
+            &format!("Proving {} chunk(s) [cs={}]", num_chunks, chunk_size),
+            |b| {
+                b.iter(|| {
+                    chunk_prover
+                        .prove(&mut rng, &chunk)
+                        .expect("couldn't prove chunk");
+                })
+            },
+        );
+    }
+
     // Do the experiments with just 1 chunk of varying size
     for &chunk_size in CHUNK_SIZES_TO_TEST {
         let num_chunks = 1;
