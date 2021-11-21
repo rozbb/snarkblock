@@ -272,7 +272,7 @@ impl ConstraintSynthesizer<BlsFr> for TagWellFormednessCircuit {
 mod test {
     use super::*;
     use crate::test_util::test_rng;
-    use ark_relations::r1cs::ConstraintSystem;
+    use ark_relations::r1cs::{ConstraintSystem, OptimizationGoal};
 
     #[test]
     fn test_well_formedness() {
@@ -309,7 +309,7 @@ mod test {
     #[test]
     fn test_blocklist() {
         let mut rng = test_rng();
-        let chunk_size = 100;
+        let chunk_size = 256;
 
         // First, we show that a randomly generated priv_id does not appear in a randomly
         // generated blocklist
@@ -320,9 +320,17 @@ mod test {
 
         // Prove that the priv_id is not on the randomly generated blocklist
         let cs = ConstraintSystem::<BlsFr>::new_ref();
+        cs.set_optimization_goal(OptimizationGoal::Constraints);
         let circuit = ChunkNonMembershipCircuit { priv_id, chunk };
         circuit.generate_constraints(cs.clone()).unwrap();
         assert!(cs.is_satisfied().unwrap());
+
+        // Print the number of constraints in this chunk non-membership circuit
+        println!(
+            "Circuit for chunk of size {} is {} constraints",
+            chunk_size,
+            cs.num_constraints()
+        );
 
         // Now check soundness. Make sure that the proof fails when the private ID is indeed on the
         // blocklist. Generate a fresh random blocklist, and also block the private ID we're using
