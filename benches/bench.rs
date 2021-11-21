@@ -302,10 +302,31 @@ fn full_attestation(c: &mut Criterion) {
                 vec![agg_head_chunk_proof.clone(), agg_tail_chunk_proof],
             );
 
-            // Now verify
+            // Do a throughput test by verifying 256 proofs in parallel
             c.bench_function(
                 &format!(
                     "Verifying 256 SB proofs [buf,nc={},cs={}]",
+                    num_head_chunks, head_chunk_size
+                ),
+                |b| {
+                    b.iter(|| {
+                        (0..256).into_par_iter().for_each(|_| {
+                            assert!(snarkblock_verifier
+                                .verify(
+                                    vec![blocklist_head_com.clone(), blocklist_tail_com.clone()],
+                                    &blocklist_elem,
+                                    buffered_snarkblock_proof.clone(),
+                                )
+                                .unwrap());
+                        })
+                    })
+                },
+            );
+
+            // Do a latency test by verifying just 1 proof
+            c.bench_function(
+                &format!(
+                    "Verifying 1 SB proof [buf,nc={},cs={}]",
                     num_head_chunks, head_chunk_size
                 ),
                 |b| {
