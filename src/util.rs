@@ -5,6 +5,7 @@ use ark_ec::{
     models::{twisted_edwards_extended, TEModelParameters as Parameters},
     ProjectiveCurve,
 };
+use ark_ed_on_bls12_381::{constraints::EdwardsVar, EdwardsProjective};
 use ark_ff::{
     fields::{Field, PrimeField},
     ToBytes, UniformRand, Zero,
@@ -27,6 +28,8 @@ pub(crate) type BlsG1 = <Bls12_381 as PairingEngine>::G1Projective;
 pub(crate) type BlsFr = ark_bls12_381::fr::Fr;
 pub(crate) type BlsFq = <BlsG1 as ProjectiveCurve>::BaseField;
 pub(crate) type BlsFrV = FpVar<BlsFr>;
+pub(crate) type JubjubVar = EdwardsVar;
+pub(crate) type Jubjub = EdwardsProjective;
 
 // Some type aliases for the Poseidon construction
 type CRH = arkworks_gadgets::setup::common::PoseidonCRH_x3_5<BlsFr>;
@@ -35,9 +38,10 @@ type PoseidonRounds = arkworks_gadgets::setup::common::PoseidonRounds_x3_5;
 const POSEIDON_CURVE: arkworks_gadgets::setup::common::Curve =
     arkworks_gadgets::setup::common::Curve::Bls381;
 
-// A field element which is used to domain-separate the Poseidon-based commitment scheme from the
-// Poseidon-based PRF scheme
+// Domain separators for the Poseidon-based commitment and hashing functionality. PRF is domain
+// separated by length: it only calls H on inputs of length 2, whereas the others use length 3+.
 const POSEIDON_COM_DOMAIN_SEP: u64 = 1337;
+const POSEIDON_SCHNORR_DOMAIN_SEP: u64 = 1338;
 
 /// Provides all the Poseidon functionality we need natively
 pub(crate) struct PoseidonCtx(PoseidonParameters<BlsFr>);
@@ -49,7 +53,7 @@ impl PoseidonCtx {
     }
 
     /// Computes the hash of the inputs
-    pub(crate) fn digest(&self, input: &[BlsFr]) -> BlsFr {
+    fn digest(&self, input: &[BlsFr]) -> BlsFr {
         let params = &self.0;
         let state_width = PoseidonRounds::WIDTH;
         if input.len() > state_width {
@@ -75,6 +79,13 @@ impl PoseidonCtx {
     pub(crate) fn prf(&self, key: BlsFr, msg: BlsFr) -> BlsFr {
         self.digest(&[key, msg])
     }
+
+    /// Computes a domain-separated digest just for Schnorr signing. Returns the hash H(r || msg)
+    pub(crate) fn schnorr_digest(&self, r: Jubjub, msg: &BlsFr) -> BlsFr {
+        let domain_sep = BlsFr::from(POSEIDON_SCHNORR_DOMAIN_SEP);
+        let hash_input = &[vec![domain_sep], r.affine_coords(), vec![*msg]].concat();
+        self.digest(hash_input)
+    }
 }
 
 /// Provides all the Poseidon functionality we need in circuits
@@ -91,7 +102,7 @@ impl PoseidonCtxVar {
     }
 
     /// Computes the hash of the inputs
-    pub(crate) fn digest(&self, input: &[BlsFrV]) -> Result<BlsFrV, SynthesisError> {
+    fn digest(&self, input: &[BlsFrV]) -> Result<BlsFrV, SynthesisError> {
         let params = &self.0;
         let state_width = PoseidonRounds::WIDTH;
         if input.len() > state_width {
@@ -116,6 +127,17 @@ impl PoseidonCtxVar {
     /// Computes a PRF on the input under the given key
     pub(crate) fn prf(&self, key: BlsFrV, msg: BlsFrV) -> Result<BlsFrV, SynthesisError> {
         self.digest(&[key, msg])
+    }
+
+    /// Computes a domain-separated digest just for Schnorr signing
+    pub(crate) fn schnorr_digest(
+        &self,
+        r: JubjubVar,
+        msg: BlsFrV,
+    ) -> Result<BlsFrV, SynthesisError> {
+        let domain_sep = BlsFrV::constant(BlsFr::from(POSEIDON_SCHNORR_DOMAIN_SEP));
+        let hash_input = &[vec![domain_sep], r.affine_coords(), vec![msg]].concat();
+        self.digest(&hash_input)
     }
 }
 

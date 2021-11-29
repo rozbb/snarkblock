@@ -1,7 +1,7 @@
 use crate::{
     util::{
-        enforce_one_hot, fr_to_fs, to_canonical_bytes, BlsFr, BlsFrV, GetAffineCoords, PoseidonCtx,
-        PoseidonCtxVar,
+        enforce_one_hot, fr_to_fs, to_canonical_bytes, BlsFr, BlsFrV, GetAffineCoords, Jubjub,
+        JubjubVar, PoseidonCtx, PoseidonCtxVar,
     },
     PrivateId, PrivateIdVar,
 };
@@ -9,7 +9,6 @@ use crate::{
 use core::iter;
 
 use ark_ec::ProjectiveCurve;
-use ark_ed_on_bls12_381::{constraints::EdwardsVar as JubjubVar, EdwardsProjective as Jubjub};
 use ark_ff::{Field, PrimeField, UniformRand};
 use ark_r1cs_std::{
     alloc::AllocVar, bits::ToBitsGadget, boolean::Boolean, eq::EqGadget, groups::CurveVar, R1CSVar,
@@ -98,7 +97,7 @@ impl SchnorrPrivkey {
         // e is H(com || msg)
         let mut hash_input = com.affine_coords();
         hash_input.push(*msg);
-        let digest = hash_ctx.digest(&hash_input);
+        let digest = hash_ctx.schnorr_digest(com, msg);
 
         // The hash function outputs a Jubjub base field element, which we can't use as a Jubjub
         // scalar. So we convert it to bytes and truncate it to as many bits as a ScalarField
@@ -191,9 +190,7 @@ impl SchnorrPubkeyVar {
 
         // e' is H(r || msg). This should be equal to the given e, up to Fr::size() many bits
         let hash_ctx = PoseidonCtxVar::new(ns!(cs, "hash ctx"))?;
-        let mut hash_input = r.affine_coords();
-        hash_input.push(msg);
-        let e_prime = hash_ctx.digest(&hash_input)?;
+        let e_prime = hash_ctx.schnorr_digest(r, msg)?;
 
         // Show that e' and e agree for all the bits up to the bitlength of the scalar field's modulus.
         // We check the truncation because we have to use the truncation of e as a scalar field element
