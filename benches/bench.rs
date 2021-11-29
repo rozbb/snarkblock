@@ -14,6 +14,50 @@ use rayon::prelude::*;
 
 const NUM_CHUNKS_TO_TEST: &[usize] = &[16 - 2, 64 - 2, 256 - 2, 1024 - 2, 4096 - 2, 16384 - 2];
 const CHUNK_SIZES_TO_TEST: &[usize] = &[1024, 8192];
+const NUM_PUBKEYS_TO_TEST: &[usize] = &[4, 16, 64];
+
+fn iwf_proof(c: &mut Criterion) {
+    let mut rng = test_rng();
+
+    // Generate a fresh private ID and make a valid blocklist element
+    let priv_id = PrivateId::gen(&mut rng);
+    let blocklist_elem = priv_id.gen_blocklist_elem(&mut rng);
+
+    for &num_pubkeys in NUM_PUBKEYS_TO_TEST {
+        // Now that the number of pubkeys is set, do the issuance
+        let (pubkeys, signers_pubkey_idx, sig, priv_id_opening) =
+            rand_issuance(&mut rng, priv_id, num_pubkeys);
+
+        // Set up the IWF provers
+        let (iwf_pk, iwf_vk) = issuance_and_wf_setup(&mut rng, num_pubkeys);
+        let (agg_iwf_pk, _) = agg_iwf_setup(&mut rng);
+
+        let iwf_prover = IssuanceAndWfProver {
+            priv_id,
+            pubkeys: pubkeys.clone(),
+            signers_pubkey_idx,
+            priv_id_opening,
+            sig,
+            proving_key: iwf_pk,
+        };
+        let agg_iwf_prover = AggIwfProver {
+            priv_id,
+            circuit_verif_key: iwf_vk.clone(),
+            agg_proving_key: agg_iwf_pk,
+        };
+
+        c.bench_function(&format!("Proving IWF [np={}]", num_pubkeys), |b| {
+            b.iter(|| {
+                let base_proof = iwf_prover
+                    .prove(&mut rng, blocklist_elem)
+                    .expect("couldn't prove base IWF");
+                let _agg_proof = agg_iwf_prover
+                    .prove(&mut rng, &base_proof)
+                    .expect("couldn't prove IWF HICIAP");
+            })
+        });
+    }
+}
 
 // This measures the cost of doing up to 14 16-element chunk proofs in parallel, as well as the
 // cost of doing just 1 chunk proof of larger sizes
@@ -414,5 +458,5 @@ fn output_proof_sizes(proof_sizes: &[(bool, usize, usize, usize)]) {
     }
 }
 
-criterion_group!(benches, chunk_proof, full_attestation);
+criterion_group!(benches, chunk_proof, iwf_proof, full_attestation);
 criterion_main!(benches);
