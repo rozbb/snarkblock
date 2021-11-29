@@ -270,15 +270,7 @@ fn full_attestation(c: &mut Criterion) {
             let blocklist_tail_com =
                 BlocklistCom::from_prepared_chunks(&mut prepared_tail_chunks, &agg_tail_chunk_pk);
 
-            // Start proving things. Start with the IWF proof
-            let base_iwf_proof = iwf_prover
-                .prove(&mut rng, blocklist_elem)
-                .expect("couldn't prove base IWF");
-            let agg_iwf_proof = agg_iwf_prover
-                .prove(&mut rng, &base_iwf_proof)
-                .expect("couldn't prove IWF HiCIAP");
-
-            // Now prove the individual chunks. For brevity we just prove 1 chunk and repeat it
+            // Prove the individual chunks. For brevity we just prove 1 chunk and repeat it
             let mut head_chunk_proofs: Vec<ChunkProof> = {
                 let proof = head_chunk_prover
                     .prove(&mut rng, &blocklist_head_chunk)
@@ -296,11 +288,22 @@ fn full_attestation(c: &mut Criterion) {
                 let buf_str = if buffered { "buf" } else { "nobuf" };
                 c.bench_function(
                     &format!(
-                        "Proving 1 SB attestation [{},nc={},cs={}]",
-                        buf_str, num_head_chunks, head_chunk_size
+                        "Proving 1 SB attestation [{},nc={},cs={},np={}]",
+                        buf_str, num_head_chunks, head_chunk_size, num_pubkeys
                     ),
                     |b| {
                         b.iter(|| {
+                            // First do the IWF proof
+                            let agg_iwf_proof = {
+                                let base_iwf_proof = iwf_prover
+                                    .prove(&mut rng, blocklist_elem)
+                                    .expect("couldn't prove base IWF");
+                                agg_iwf_prover
+                                    .prove(&mut rng, &base_iwf_proof)
+                                    .expect("couldn't prove IWF HiCIAP")
+                            };
+
+                            // Now the aggregate chunk proof(s)
                             if !buffered {
                                 // If unbuffered, compute a head chunk. There is no tail
                                 let head_chunk_proof = head_chunk_prover
@@ -319,7 +322,7 @@ fn full_attestation(c: &mut Criterion) {
 
                                 let _snarkblock_proof = SnarkblockProof::new(
                                     &mut rng,
-                                    agg_iwf_proof.clone(),
+                                    agg_iwf_proof,
                                     vec![agg_head_chunk_proof],
                                 );
                             } else {
@@ -347,7 +350,7 @@ fn full_attestation(c: &mut Criterion) {
 
                                 let _snarkblock_proof = SnarkblockProof::new(
                                     &mut rng,
-                                    agg_iwf_proof.clone(),
+                                    agg_iwf_proof,
                                     vec![agg_head_chunk_proof, agg_tail_chunk_proof],
                                 );
                             }
@@ -363,6 +366,14 @@ fn full_attestation(c: &mut Criterion) {
             let agg_tail_chunk_proof = agg_tail_chunk_prover
                 .prove(&mut rng, &mut tail_chunk_proofs, &mut prepared_tail_chunks)
                 .expect("couldn't prove HiCIAP over tail chunks");
+            let agg_iwf_proof = {
+                let base_iwf_proof = iwf_prover
+                    .prove(&mut rng, blocklist_elem)
+                    .expect("couldn't prove base IWF");
+                agg_iwf_prover
+                    .prove(&mut rng, &base_iwf_proof)
+                    .expect("couldn't prove IWF HiCIAP")
+            };
 
             let buffered_snarkblock_proof = SnarkblockProof::new(
                 &mut rng,
@@ -373,8 +384,8 @@ fn full_attestation(c: &mut Criterion) {
             // Do a throughput test by verifying 256 proofs in parallel
             c.bench_function(
                 &format!(
-                    "Verifying 256 SB proofs [buf,nc={},cs={}]",
-                    num_head_chunks, head_chunk_size
+                    "Verifying 256 SB proofs [buf,nc={},cs={},np={}]",
+                    num_head_chunks, head_chunk_size, num_pubkeys
                 ),
                 |b| {
                     b.iter(|| {
@@ -394,8 +405,8 @@ fn full_attestation(c: &mut Criterion) {
             // Do a latency test by verifying just 1 proof
             c.bench_function(
                 &format!(
-                    "Verifying 1 SB proof [buf,nc={},cs={}]",
-                    num_head_chunks, head_chunk_size
+                    "Verifying 1 SB proof [buf,nc={},cs={},np={}]",
+                    num_head_chunks, head_chunk_size, num_pubkeys
                 ),
                 |b| {
                     b.iter(|| {
