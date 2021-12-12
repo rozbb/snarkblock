@@ -96,27 +96,6 @@ pub struct ChunkProver {
     pub proving_key: ChunkProvingKey,
 }
 
-// A helper function that binds the chunk to the given SPID and pads it to the given length
-fn bind_and_pad(chunk: &[BlocklistElem], spid: &[u8], chunk_size: usize) -> Chunk {
-    if chunk.len() > chunk_size {
-        panic!("Provided chunk is bigger than prover's preprogrammed chunk size");
-    }
-
-    // Make a copy of the chunk because we need to edit it
-    let mut chunk = chunk.to_vec();
-
-    // Bind every sessions nonce in the chunk to the SPID
-    for elem in chunk.iter_mut() {
-        elem.sess_nonce = elem.sess_nonce.bind_to_spid(spid);
-    }
-
-    // Now pad the chunk out to the correct chunk size
-    let padding_size = chunk_size - chunk.len();
-    chunk.extend(iter::repeat(BlocklistElem::default()).take(padding_size));
-
-    Chunk(chunk)
-}
-
 impl ChunkProver {
     /// Computes a proof of nonmembership of the private ID in the current chunk. If the given
     /// chunk is less than this `ChunkProver`'s chunk size, then it will be right-padded with

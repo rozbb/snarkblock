@@ -1,6 +1,6 @@
 use crate::{
     util::{
-        enforce_one_hot, fr_to_fs, to_canonical_bytes, BlsFr, BlsFrV, GetAffineCoords, Jubjub,
+        enforce_one_hot, fr_to_fq, to_canonical_bytes, BlsFr, BlsFrV, GetAffineCoords, Jubjub,
         JubjubVar, PoseidonCtx, PoseidonCtxVar,
     },
     PrivateId, PrivateIdVar,
@@ -53,8 +53,8 @@ impl SchnorrSignatureVar {
         // Signatures are Jubjub scalars. In order to use them in the circuit we need to embed them
         // into the Jubjub's scalar field (which is at least as big as the Jubjub scalar field, so
         // this is injective)
-        let lifted_s = fr_to_fs::<Jubjub, BlsFr>(sig.s);
-        let lifted_e = fr_to_fs::<Jubjub, BlsFr>(sig.e);
+        let lifted_s = fr_to_fq::<Jubjub, BlsFr>(sig.s);
+        let lifted_e = fr_to_fq::<Jubjub, BlsFr>(sig.e);
 
         // Construct the lifted signature
         let s_var = BlsFrV::new_witness(ns!(cs, "sig s var"), || Ok(lifted_s))?;

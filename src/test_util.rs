@@ -1,25 +1,26 @@
 use crate::{
     blocklist::{BlocklistElem, Chunk, SessionNonce, SessionTag},
-    issuance::{
-        IssuanceOpening, OneofNSchnorrVerifyCircuit, SchnorrPrivkey, SchnorrPubkey,
-        SchnorrSignature,
-    },
+    issuance::{IssuanceOpening, SchnorrPrivkey, SchnorrPubkey, SchnorrSignature},
     util::BlsFr,
     PrivateId,
 };
 
-use ark_ff::{ToConstraintField, UniformRand};
+use ark_ff::UniformRand;
 use ark_std::rand::{rngs::StdRng, CryptoRng, Rng, RngCore, SeedableRng};
 
 pub fn test_rng() -> StdRng {
     StdRng::seed_from_u64(1337)
 }
 
+#[cfg(test)]
 pub(crate) fn rand_schnorr_verify_circuit<R: CryptoRng + RngCore>(
     rng: &mut R,
     priv_id: PrivateId,
     num_pubkeys: usize,
-) -> (OneofNSchnorrVerifyCircuit, Vec<BlsFr>) {
+) -> (crate::issuance::OneofNSchnorrVerifyCircuit, Vec<BlsFr>) {
+    use crate::issuance::OneofNSchnorrVerifyCircuit;
+    use ark_ff::ToConstraintField;
+
     let (pubkeys, signers_pubkey_idx, sig, priv_id_opening) =
         rand_issuance(rng, priv_id, num_pubkeys);
 

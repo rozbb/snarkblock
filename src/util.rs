@@ -1,14 +1,12 @@
 pub(crate) use ark_bls12_381::Bls12_381;
-use ark_ec::PairingEngine;
 use ark_ec::{
-    group::Group,
     models::{twisted_edwards_extended, TEModelParameters as Parameters},
     ProjectiveCurve,
 };
 use ark_ed_on_bls12_381::{constraints::EdwardsVar, EdwardsProjective};
 use ark_ff::{
     fields::{Field, PrimeField},
-    ToBytes, UniformRand, Zero,
+    ToBytes, Zero,
 };
 use ark_r1cs_std::{
     alloc::AllocVar,
@@ -20,20 +18,16 @@ use ark_r1cs_std::{
 };
 use ark_relations::r1cs::{Namespace, SynthesisError};
 use ark_serialize::{CanonicalSerialize, SerializationError};
-use ark_std::rand::{prelude::StdRng, SeedableRng};
 use arkworks_gadgets::poseidon::{constraints::PoseidonParametersVar, PoseidonParameters, Rounds};
-use digest::Digest;
 
-pub(crate) type BlsG1 = <Bls12_381 as PairingEngine>::G1Projective;
 pub(crate) type BlsFr = ark_bls12_381::fr::Fr;
-pub(crate) type BlsFq = <BlsG1 as ProjectiveCurve>::BaseField;
 pub(crate) type BlsFrV = FpVar<BlsFr>;
 pub(crate) type JubjubVar = EdwardsVar;
 pub(crate) type Jubjub = EdwardsProjective;
 
 // Some type aliases for the Poseidon construction
-type CRH = arkworks_gadgets::setup::common::PoseidonCRH_x3_5<BlsFr>;
-type CRHGadget = arkworks_gadgets::setup::common::PoseidonCRH_x3_5Gadget<BlsFr>;
+type Crh = arkworks_gadgets::setup::common::PoseidonCRH_x3_5<BlsFr>;
+type CrhGadget = arkworks_gadgets::setup::common::PoseidonCRH_x3_5Gadget<BlsFr>;
 type PoseidonRounds = arkworks_gadgets::setup::common::PoseidonRounds_x3_5;
 const POSEIDON_CURVE: arkworks_gadgets::setup::common::Curve =
     arkworks_gadgets::setup::common::Curve::Bls381;
@@ -65,7 +59,7 @@ impl PoseidonCtx {
         buffer[..input.len()].clone_from_slice(input);
 
         // Run the permutation and return the first element of the resulting state
-        let result = CRH::permute(params, buffer).expect("failed to permute Poseidon");
+        let result = Crh::permute(params, buffer).expect("failed to permute Poseidon");
         result.get(0).cloned().unwrap()
     }
 
@@ -114,7 +108,7 @@ impl PoseidonCtxVar {
         buffer[..input.len()].clone_from_slice(input);
 
         // Run the permutation and return the first element of the resulting state
-        let result = CRHGadget::permute(params, buffer);
+        let result = CrhGadget::permute(params, buffer);
         result.map(|x| x.get(0).cloned().ok_or(SynthesisError::AssignmentMissing))?
     }
 
@@ -142,31 +136,14 @@ impl PoseidonCtxVar {
 }
 
 /// Converts an element of a curve's scalar field into an element of the base field
-pub(crate) fn fr_to_fs<C, Fs>(x: <C as ProjectiveCurve>::ScalarField) -> Fs
+pub(crate) fn fr_to_fq<C, Fq>(x: <C as ProjectiveCurve>::ScalarField) -> Fq
 where
-    C: ProjectiveCurve<BaseField = Fs>,
-    Fs: PrimeField,
+    C: ProjectiveCurve<BaseField = Fq>,
+    Fq: PrimeField,
 {
     let mut x_bytes = Vec::new();
     x.write(&mut x_bytes).unwrap();
-    Fs::read(&*x_bytes).unwrap()
-}
-
-pub(crate) fn hash_to_field<D, F>(input: &[u8]) -> F
-where
-    D: Digest,
-    F: Field,
-{
-    let mut counter_nonce: usize = 0;
-    loop {
-        let mut hash_input = Vec::new();
-        hash_input.extend_from_slice(&counter_nonce.to_be_bytes()[..]);
-        hash_input.extend_from_slice(&input);
-        if let Some(r) = F::from_random_bytes(&D::digest(&hash_input)) {
-            return r;
-        };
-        counter_nonce += 1;
-    }
+    Fq::read(&*x_bytes).unwrap()
 }
 
 /// Serializes the given value into a Vec<u8>
@@ -199,23 +176,6 @@ pub(crate) fn enforce_one_hot<F: PrimeField>(
 
     // Assert that the sum was 1, i.e., there was precisely 1 one in one_hot_vec
     num_ones.enforce_equal(&one)
-}
-
-/// Returns num_generators many deterministic pseudorandom group elements. This is used to
-/// construct Pedersen commitments
-pub fn get_pedersen_generators<G>(num_generators: usize) -> Vec<G>
-where
-    G: Group + UniformRand,
-{
-    // Pick a nothing-up-my-sleeve RNG seed
-    let mut seed = [0u8; 32];
-    seed[0..24].copy_from_slice(b"snarkblock-pedersen-seed");
-    let mut rng = StdRng::from_seed(seed);
-
-    // Generate and collect the requested number of group elements
-    core::iter::repeat_with(|| G::rand(&mut rng))
-        .take(num_generators)
-        .collect()
 }
 
 /// This trait exposes the ability to retrieve affine coordinates from a curve point

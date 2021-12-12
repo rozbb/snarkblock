@@ -14,7 +14,7 @@ use ark_std::rand::{CryptoRng, RngCore};
 use blake2::Blake2b;
 use digest::Digest;
 
-const SPID_DOMAIN_STR: &[u8] = b"snarkblock-spid";
+const NONCE_CTX_DOMAIN_STR: &[u8] = b"snarkblock-nonce";
 
 /// A nonce that has been bound to an SPID
 #[derive(CanonicalSerialize, CanonicalDeserialize, Clone, Copy, Default)]
@@ -26,12 +26,12 @@ impl SessionNonce {
         SessionNonce(BlsFr::rand(rng))
     }
 
-    /// Binds this nonce to a SPID
-    pub fn bind_to_spid(&self, spid: &[u8]) -> SessionNonce {
+    /// Binds this nonce to the given context string
+    pub fn bind_to_context(&self, context: &[u8]) -> SessionNonce {
         // The output nonce is H(input_nonce || spid)
-        let mut h = Blake2b::with_params(b"", SPID_DOMAIN_STR, b"");
+        let mut h = Blake2b::with_params(b"", NONCE_CTX_DOMAIN_STR, b"");
         h.update(to_canonical_bytes(self.0).unwrap());
-        h.update(spid);
+        h.update(context);
 
         // Parse the hash as a field element, reducing as necessary
         let nonce = BlsFr::from_be_bytes_mod_order(&h.finalize());
