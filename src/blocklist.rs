@@ -45,8 +45,8 @@ pub struct SessionTag(pub(crate) BlsFr);
 
 #[derive(CanonicalSerialize, CanonicalDeserialize, Clone, Copy)]
 pub struct BlocklistElem {
-    pub(crate) sess_nonce: SessionNonce,
-    pub(crate) sess_tag: SessionTag,
+    pub(crate) nonce: SessionNonce,
+    pub(crate) tag: SessionTag,
 }
 
 impl Default for BlocklistElem {
@@ -54,8 +54,8 @@ impl Default for BlocklistElem {
     /// overwhelming probability, so it shouldn't interfere with proofs of nonmembership.
     fn default() -> BlocklistElem {
         BlocklistElem {
-            sess_nonce: SessionNonce(BlsFr::zero()),
-            sess_tag: SessionTag(BlsFr::zero()),
+            nonce: SessionNonce(BlsFr::zero()),
+            tag: SessionTag(BlsFr::zero()),
         }
     }
 }
@@ -63,14 +63,14 @@ impl Default for BlocklistElem {
 // Define a way to serialize a blocklist element for HiCIAP verification
 impl ToConstraintField<BlsFr> for BlocklistElem {
     fn to_field_elements(&self) -> Option<Vec<BlsFr>> {
-        Some(vec![self.sess_nonce.0, self.sess_tag.0])
+        Some(vec![self.nonce.0, self.tag.0])
     }
 }
 
 #[derive(Clone)]
 pub(crate) struct BlocklistElemVar {
-    pub(crate) sess_nonce: BlsFrV,
-    pub(crate) sess_tag: BlsFrV,
+    pub(crate) nonce: BlsFrV,
+    pub(crate) tag: BlsFrV,
 }
 
 impl BlocklistElemVar {
@@ -81,24 +81,21 @@ impl BlocklistElemVar {
         let ns = cs.into();
         let cs = ns.cs();
 
-        let sess_nonce = BlsFrV::new_input(ns!(cs, "session nonce"), || Ok(elem.sess_nonce.0))?;
-        let sess_tag = BlsFrV::new_input(ns!(cs, "session tag"), || Ok(elem.sess_tag.0))?;
+        let nonce = BlsFrV::new_input(ns!(cs, "session nonce"), || Ok(elem.nonce.0))?;
+        let tag = BlsFrV::new_input(ns!(cs, "session tag"), || Ok(elem.tag.0))?;
 
-        Ok(BlocklistElemVar {
-            sess_nonce,
-            sess_tag,
-        })
+        Ok(BlocklistElemVar { nonce, tag })
     }
 }
 
 impl PrivateId {
-    /// Given service provider ID, sess_nonce, privID, computes H(ID || sess_nonce || privID)
+    /// Given service provider ID, nonce, privID, computes H(ID || nonce || privID)
     pub(crate) fn compute_session_tag(
         &self,
         hash_ctx: &PoseidonCtx,
-        sess_nonce: SessionNonce,
+        nonce: SessionNonce,
     ) -> SessionTag {
-        SessionTag(hash_ctx.prf(self.0, sess_nonce.0))
+        SessionTag(hash_ctx.prf(self.0, nonce.0))
     }
 
     /// Creates a valid, random blocklist element under this ID
@@ -106,23 +103,20 @@ impl PrivateId {
         let hash_ctx = PoseidonCtx::new();
 
         // Make a random nonce and compute the corresponding tag
-        let sess_nonce = SessionNonce::gen(rng);
-        let sess_tag = self.compute_session_tag(&hash_ctx, sess_nonce);
-        BlocklistElem {
-            sess_nonce,
-            sess_tag,
-        }
+        let nonce = SessionNonce::gen(rng);
+        let tag = self.compute_session_tag(&hash_ctx, nonce);
+        BlocklistElem { nonce, tag }
     }
 }
 
 impl PrivateIdVar {
-    /// Given service provider ID, sess_nonce, private ID, computes H(ID || sess_nonce || privID)
+    /// Given service provider ID, nonce, private ID, computes H(ID || nonce || privID)
     fn compute_session_tag(
         &self,
         hash_ctx: &PoseidonCtxVar,
-        sess_nonce: BlsFrV,
+        nonce: BlsFrV,
     ) -> Result<BlsFrV, SynthesisError> {
-        hash_ctx.prf(self.0.clone(), sess_nonce)
+        hash_ctx.prf(self.0.clone(), nonce)
     }
 
     /// Returns a boolean which represents the statement "this private ID has generated some tag
@@ -131,17 +125,12 @@ impl PrivateIdVar {
         let cs = self.0.cs();
         let hash_ctx = PoseidonCtxVar::new(ns!(cs, "hash ctx"))?;
 
-        // Go through each (sess_nonce, sess_tag) pair of the chunk, keeping track of whether this
+        // Go through each (nonce, tag) pair of the chunk, keeping track of whether this
         // private ID created anything in the chunk
         let mut found = Boolean::constant(false);
-        for BlocklistElemVar {
-            sess_nonce,
-            sess_tag,
-            ..
-        } in &chunk.0
-        {
-            let my_tag = self.compute_session_tag(&hash_ctx, sess_nonce.clone())?;
-            let tags_equal = my_tag.is_eq(sess_tag)?;
+        for BlocklistElemVar { nonce, tag, .. } in &chunk.0 {
+            let my_tag = self.compute_session_tag(&hash_ctx, nonce.clone())?;
+            let tags_equal = my_tag.is_eq(tag)?;
             found = found.or(&tags_equal)?;
         }
 
@@ -220,8 +209,8 @@ impl ConstraintSynthesizer<BlsFr> for ChunkNonMembershipCircuit {
     }
 }
 
-/// This circuit proves that the blacklist element (sess_nonce, sess_tag) satisfies the relation
-/// `sess_tag = H(sp_id || sess_nonce || credential)` where `sp_id` is the (public) service
+/// This circuit proves that the blacklist element (nonce, tag) satisfies the relation
+/// `tag = H(sp_id || nonce || credential)` where `sp_id` is the (public) service
 /// provider ID, and credential is the hidden credential.
 #[derive(Clone, Default)]
 pub struct TagWellFormednessCircuit {
@@ -237,7 +226,7 @@ impl TagWellFormednessCircuit {
     }
 
     /// The main logic of the circuit. The goal of this function is to prove that
-    //     H(self.blocklist_elem.sess_nonce || self.priv_id) = self.sess_tag,
+    //     H(self.blocklist_elem.nonce || self.priv_id) = self.tag,
     // i.e., that the given session tag is correctly constructed wrt the hidden credential
     pub(crate) fn generate_constraints_preallocated(
         priv_id_var: PrivateIdVar,
@@ -246,9 +235,8 @@ impl TagWellFormednessCircuit {
     ) -> Result<(), SynthesisError> {
         // Compute the session tag from the credential and session nonce and assert that the
         // computed session tag is equal to the given session tag
-        let computed_sess_tag =
-            priv_id_var.compute_session_tag(&hash_ctx, blocklist_elem_var.sess_nonce)?;
-        computed_sess_tag.enforce_equal(&blocklist_elem_var.sess_tag)
+        let computed_tag = priv_id_var.compute_session_tag(&hash_ctx, blocklist_elem_var.nonce)?;
+        computed_tag.enforce_equal(&blocklist_elem_var.tag)
     }
 }
 
@@ -294,7 +282,7 @@ mod test {
         // Now ensure that changing the tag to a random tag breaks this relation. Make the bad
         // element
         let mut bad_blocklist_elem = blocklist_elem;
-        bad_blocklist_elem.sess_tag = SessionTag(BlsFr::rand(&mut rng));
+        bad_blocklist_elem.tag = SessionTag(BlsFr::rand(&mut rng));
         let circuit = TagWellFormednessCircuit {
             priv_id,
             blocklist_elem: bad_blocklist_elem,

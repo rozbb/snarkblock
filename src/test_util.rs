@@ -79,8 +79,8 @@ impl BlocklistElem {
     /// overwhelming probability, so it shouldn't interfere with proofs of nonmembership.
     pub fn gen<R: RngCore + CryptoRng>(rng: &mut R) -> BlocklistElem {
         BlocklistElem {
-            sess_nonce: SessionNonce::gen(rng),
-            sess_tag: SessionTag(BlsFr::rand(rng)),
+            nonce: SessionNonce::gen(rng),
+            tag: SessionTag(BlsFr::rand(rng)),
         }
     }
 }

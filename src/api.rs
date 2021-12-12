@@ -160,7 +160,7 @@ impl ChunkPreparer {
         let serialized_chunk: Vec<BlsFr> = chunk
             .0
             .iter()
-            .flat_map(|e| iter::once(&e.sess_nonce.0).chain(iter::once(&e.sess_tag.0)))
+            .flat_map(|e| iter::once(&e.nonce.0).chain(iter::once(&e.tag.0)))
             .cloned()
             .collect();
 
