@@ -4,11 +4,6 @@ This repo is the Rust implementation of the SNARKBlock anonymous blocklisting sy
 
 For example usage, see the `test_snarkblock` test in [`src/api.rs`](src/api.rs). To run benchmarks, execute `bash run_benches.sh` and view the results in `target/criterion/report/index.html`.
 
-To-do
------
-
-[ ] Write a simple interface for context binding to session nonces
-
 Warning
 -------
 
